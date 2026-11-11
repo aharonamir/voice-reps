@@ -1,0 +1,20 @@
+# Expects -DZONOS3_GGML_DIR=<path to ZONOS3-Mini/servers/ggml>
+cmake_minimum_required(VERSION 3.22)
+project(zonos3_android C CXX)
+
+set(ZONOS3_SERVER OFF CACHE BOOL "" FORCE)
+set(ZONOS3_APP OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+get_filename_component(ZONOS3_GGML ${ZONOS3_GGML_DIR} ABSOLUTE)
+add_subdirectory(${ZONOS3_GGML} zonos3-ggml)
+
+add_library(zonos3jni SHARED jni/zonos3_jni.cpp)
+target_link_libraries(zonos3jni PRIVATE zonos3 zonos3-audio)
+target_include_directories(zonos3jni PRIVATE ${ZONOS3_GGML}/src)
+
+if (NOT ANDROID)
+    add_executable(zonos3_host_test jni/zonos3_jni.cpp)
+    target_link_libraries(zonos3_host_test PRIVATE zonos3 zonos3-audio)
+    target_include_directories(zonos3_host_test PRIVATE ${ZONOS3_GGML}/src)
+endif()

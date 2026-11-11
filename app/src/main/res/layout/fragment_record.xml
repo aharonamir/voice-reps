@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="16dp">
+
+        <com.google.android.material.card.MaterialCardView android:id="@+id/consent_card"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            app:cardBackgroundColor="@color/surface" app:cardCornerRadius="16dp" app:cardElevation="0dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:padding="20dp">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="Before you record" android:textSize="20sp" android:textStyle="bold"
+                    android:textColor="@color/text_primary" android:layout_marginBottom="8dp" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/disclaimer" android:textSize="14sp"
+                    android:textColor="@color/text_secondary" android:layout_marginBottom="16dp" />
+                <Button android:id="@+id/consent_agree" android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" android:text="I have consent - continue" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <LinearLayout android:id="@+id/record_card" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+
+            <com.google.android.material.card.MaterialCardView android:layout_width="match_parent"
+                android:layout_height="wrap_content" app:cardBackgroundColor="@color/surface_alt"
+                app:cardCornerRadius="16dp" app:cardElevation="0dp" android:layout_marginBottom="16dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:padding="16dp">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:text="Read these while recording (about 30-60 seconds total):" android:textSize="14sp"
+                        android:textStyle="bold" android:textColor="@color/teal" android:layout_marginBottom="8dp" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                        android:textSize="14sp" android:textColor="@color/text_primary" android:lineSpacingMultiplier="1.4"
+                        android:text="1. Hello! This is my voice, and I'm happy to share it.\n2. The quick brown fox jumps over the lazy dog.\n3. Today is a beautiful day to build something new.\n4. One, two, three, four, five - counting is easy.\n5. Please pass the salt and tell me a story.\n6. שלום! זה הקול שלי ואני שמח לשתף אותו.\n7. שמי הוא השם שאתם שומעים עכשיו בדיקה.\n8. אני אוהב לדבר עברית וגם אנגלית בבוקר ובערב." />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <ProgressBar android:id="@+id/record_level" style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <TextView android:id="@+id/record_timer" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:layout_gravity="center"
+                android:textColor="@color/text_secondary" android:layout_marginTop="4dp" android:layout_marginBottom="8dp" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:gravity="center">
+                <Button android:id="@+id/record_button" android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" android:text="Record"
+                    android:backgroundTint="@color/record_red" android:layout_marginEnd="12dp" />
+                <Button android:id="@+id/upload_button" android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" android:text="Upload audio file"
+                    android:backgroundTint="@color/accent_dim" />
+            </LinearLayout>
+
+            <Button android:id="@+id/create_voice_button" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:text="Create voice" android:enabled="false"
+                android:layout_gravity="center" android:layout_marginTop="12dp" />
+
+            <TextView android:id="@+id/record_status" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:layout_gravity="center" android:gravity="center"
+                android:textColor="@color/text_secondary" android:layout_marginTop="12dp" android:textSize="14sp" />
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

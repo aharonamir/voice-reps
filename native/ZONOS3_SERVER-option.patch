@@ -1,0 +1,43 @@
+diff --git a/servers/ggml/CMakeLists.txt b/servers/ggml/CMakeLists.txt
+index e10b0e6..4fb693c 100644
+--- a/servers/ggml/CMakeLists.txt
++++ b/servers/ggml/CMakeLists.txt
+@@ -26,6 +26,10 @@ if (ZONOS3_APP AND APPLE)
+     enable_language(OBJCXX)
+ endif()
+ 
++# --- Android / embedded builds: the HTTP server (and the cargo-built Rust textnorm it needs) is optional. ---
++# OFF skips zonos3-cli (it links the server's request resolver) and every server target.
++option(ZONOS3_SERVER "Build the HTTP server and the request-resolver CLI (requires cargo)" ON)
++
+ # --- CUDA target (H100 = sm_90). Enable with -DGGML_CUDA=ON ---
+ if (GGML_CUDA)
+     if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+@@ -141,9 +145,11 @@ target_sources(zonos3 PRIVATE src/zonos3-accent.cpp)
+ target_sources(zonos3 PRIVATE src/zonos3-edit.cpp)
+ # --- end speech editing ---
+ 
++if (ZONOS3_SERVER)
+ add_executable(zonos3-cli src/main.cpp)
+ target_link_libraries(zonos3-cli PRIVATE zonos3 zonos3-audio)
+ target_include_directories(zonos3-cli PRIVATE vendor)
++endif()
+ 
+ add_executable(zac-cli src/zac-cli.cpp)
+ target_link_libraries(zac-cli PRIVATE zonos3-audio)
+@@ -171,6 +177,7 @@ add_executable(zonos3-perplexity src/perplexity.cpp)
+ target_link_libraries(zonos3-perplexity PRIVATE zonos3)
+ target_include_directories(zonos3-perplexity PRIVATE vendor)
+ 
++if (ZONOS3_SERVER)
+ # --- HTTP server (plan 7.1): src/server/*, the API spec embedded for request validation ---
+ # Request validation: vendored pboettch/json-schema-validator 2.3.0 (MIT) against servers/api/openapi.json, embedded as
+ # generated/zonos3-openapi.h.
+@@ -242,6 +249,7 @@ target_link_libraries(zonos3-server PRIVATE zonos3-server-core)
+ # --- zonos3-cli --request (plan 7.14): the server's request resolver builds the prompt ---
+ target_link_libraries(zonos3-cli PRIVATE zonos3-server-core)
+ # --- end zonos3-cli --request ---
++endif() # ZONOS3_SERVER
+ 
+ include(CTest)
+ if (BUILD_TESTING)
