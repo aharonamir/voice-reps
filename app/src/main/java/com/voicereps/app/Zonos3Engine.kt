@@ -101,11 +101,11 @@ object Zonos3Engine {
     } catch (t: Throwable) { fail("synthesize", t) }
 
     @Synchronized
-    fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, controls: String = "", listener: Zonos3.PcmListener): Boolean = try {
+    fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, controls: String = "", listener: Zonos3.PcmListener, seed: Int = seed()): Boolean = try {
         lastNativeError = ""
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
-        val ok = Zonos3.nativeSynthesizeStreaming(h, text, seed(), 0, controls, listener)
+        val ok = Zonos3.nativeSynthesizeStreaming(h, text, seed, 0, controls, listener)
         if (!ok) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "streaming synthesis failed" }
         ok
     } catch (t: Throwable) {
@@ -141,7 +141,7 @@ object Zonos3Engine {
         }
     } catch (t: Throwable) { fail("embedVoice", t) }
 
-    private fun seed() = (System.currentTimeMillis() % 100000).toInt()
+    fun seed() = (System.currentTimeMillis() % 100000).toInt()
 
     private fun fail(where: String, t: Throwable): FloatArray? {
         lastNativeError = "${t.javaClass.simpleName}: ${t.message}"

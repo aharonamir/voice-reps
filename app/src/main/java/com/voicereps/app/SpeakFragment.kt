@@ -191,26 +191,43 @@ class SpeakFragment : Fragment() {
             var stream: AudioPlayer.Stream? = null
             try {
                 val t0 = System.currentTimeMillis()
-                val stats = PcmStats()
-                val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, controls,
-                    object : com.zyphra.zonos3.Zonos3.PcmListener {
-                        override fun onChunk(pcm: FloatArray) {
-                            check(operation.get() == id) { "Playback interrupted" }
-                            stats.add(pcm)
-                            if (pcm.isEmpty()) return
-                            synchronized(player) {
+                // Strong expression steering can occasionally make the engine render a silent clip.
+                // Retry with a new seed and gentler steering before telling the user it failed.
+                val attempts = listOf(controls, scaleControls(controls, 0.5), "")
+                    .filterIndexed { i, c -> i == 0 || c != controls }
+                var lastFailure = "The engine returned silent audio."
+                var played = false
+                for ((n, ctl) in attempts.withIndex()) {
+                    check(operation.get() == id) { "Playback interrupted" }
+                    val stats = PcmStats()
+                    val seed = Zonos3Engine.seed() + n * 7919
+                    val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, ctl,
+                        object : com.zyphra.zonos3.Zonos3.PcmListener {
+                            override fun onChunk(pcm: FloatArray) {
                                 check(operation.get() == id) { "Playback interrupted" }
-                                if (stream == null) {
-                                    stream = player.beginStream(appCtx)
-                                    val ms = System.currentTimeMillis() - t0
-                                    update(id) { status.text = "Speaking... (first audio in ${ms}ms)" }
+                                stats.add(pcm)
+                                if (pcm.isEmpty()) return
+                                synchronized(player) {
+                                    check(operation.get() == id) { "Playback interrupted" }
+                                    if (stream == null) {
+                                        stream = player.beginStream(appCtx)
+                                        val ms = System.currentTimeMillis() - t0
+                                        update(id) { status.text = "Speaking... (first audio in ${ms}ms)" }
+                                    }
                                 }
+                                player.writeStream(stream!!, pcm)
                             }
-                            player.writeStream(stream!!, pcm)
-                        }
-                    })
-                check(ok) { Zonos3Engine.lastNativeError.ifEmpty { "Speech generation failed. Try Speak again." } }
-                stats.requireAudible()
+                        }, seed)
+                    check(ok) { Zonos3Engine.lastNativeError.ifEmpty { "Speech generation failed. Try Speak again." } }
+                    val audible = stats.frames > 0 && stats.peak > 0.00001f
+                    Log.i(TAG, "attempt ${n + 1}/${attempts.size} controls='$ctl' seed=$seed frames=${stats.frames} peak=${stats.peak} voice=${if (emb == null) "default" else "saved"}")
+                    if (audible) { played = true; break }
+                    lastFailure = "The engine returned silent audio (controls='$ctl', frames=${stats.frames})."
+                    CrashLog.record(appCtx, "silent attempt ${n + 1}", IllegalStateException(lastFailure))
+                    stream?.let { player.cancelStream(it) }; stream = null
+                    if (n < attempts.size - 1) update(id) { status.text = "Silent result, retrying (${n + 2}/${attempts.size})..." }
+                }
+                check(played) { "$lastFailure Tried ${attempts.size} times. Try Speak again." }
                 val finished = stream ?: error("The engine returned no audio. Try Speak again.")
                 player.finishStream(finished)
                 update(id) {
@@ -225,6 +242,13 @@ class SpeakFragment : Fragment() {
             }
         }.start()
     }
+
+    /** "id=dose;..." with every dose multiplied by factor. */
+    private fun scaleControls(c: String, factor: Double): String =
+        c.split(';').filter { it.contains('=') }.joinToString(";") {
+            val (k, v) = it.split('=', limit = 2)
+            "$k=${(v.toDoubleOrNull() ?: 0.0) * factor}"
+        }
 
     private fun saveAndShare() {
         if (busy) return
