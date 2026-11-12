@@ -9,3 +9,7 @@ local.properties
 *.jks
 *.keystore
 voice-reps-signing.properties
+
+# Signing secrets and local plaintext keystores
+*.p12
+*.enc.tmp
