@@ -11,13 +11,16 @@
 
 #include "zonos3.h"
 #include "zonos3-generation.h"
+#include "zonos3-steer.h"
 #include "zac.h"
 #include "spk-encoder.h"
 #include "wav.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <sys/stat.h>
@@ -43,15 +46,68 @@ static bool file_exists_with_size(const char * path, long & size_out) {
 // Engine
 // ---------------------------------------------------------------------------
 
+struct zonos3_engine;
+static void set_err(zonos3_engine * e, const std::string & m);
+
 struct zonos3_engine {
     zonos3_model model;
     bool model_ok = false;
     zac_model decoder;
     bool decoder_ok = false;
+    zonos3_steer_bundle steer;    // expression/emotion directions (steer.gguf)
+    bool steer_ok = false;
     std::vector<float> speaker;   // 192-d embedding; empty = unconditioned
     std::string last_error;
     std::mutex mu;                // one synthesis at a time per engine
 };
+
+// "id=dose;id=dose" (e.g. "emotions.happy=2;delivery.tempo=-1"), ids as in /v2/controls.
+static bool parse_controls(const std::string & s, std::map<std::string, double> & out) {
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t semi = s.find(';', i);
+        std::string kv = s.substr(i, semi == std::string::npos ? std::string::npos : semi - i);
+        i = semi == std::string::npos ? s.size() : semi + 1;
+        if (kv.empty()) continue;
+        size_t eq = kv.find('=');
+        if (eq == std::string::npos || eq == 0) return false;
+        char * end = nullptr;
+        double v = strtod(kv.c_str() + eq + 1, &end);
+        if (!end || *end) return false;
+        out[kv.substr(0, eq)] = v;
+    }
+    return true;
+}
+
+// Resolves expression controls for one synthesis: hidden-space directions (emotions, mood,
+// delivery, expressive) become a steering delta for generation; raw-space directions move a
+// COPY of the speaker embedding (the stored embedding is never modified). steering must
+// outlive the zonos3_generate call that consumes *steering_out.
+static bool engine_apply_controls(zonos3_engine * e, const std::string & controls_str,
+                                  std::vector<float> & spk_inout, zonos3_steering & steering,
+                                  const zonos3_steering ** steering_out) {
+    *steering_out = nullptr;
+    if (controls_str.empty()) return true;
+    if (!e->steer_ok) {
+        set_err(e, "expression controls unavailable: steer.gguf is not loaded (re-download models)");
+        return false;
+    }
+    std::map<std::string, double> controls;
+    if (!parse_controls(controls_str, controls)) {
+        set_err(e, "malformed controls string: " + controls_str);
+        return false;
+    }
+    if (controls.empty()) return true;
+    std::string err;
+    if (!zonos3_steer_resolve(e->steer, controls, /*spans=*/{}, /*text_chars=*/0, /*frames_per_char=*/1.0,
+                              spk_inout.empty() ? nullptr : &spk_inout, steering, err)) {
+        set_err(e, "steering: " + err);
+        return false;
+    }
+    *steering_out = &steering;
+    ZLOGI("controls applied: %s", controls_str.c_str());
+    return true;
+}
 
 static void set_err(zonos3_engine * e, const std::string & m) {
     if (e) e->last_error = m;
@@ -59,7 +115,7 @@ static void set_err(zonos3_engine * e, const std::string & m) {
 
 extern "C" {
 
-long zonos3_engine_init(const char * backbone_gguf, const char * decoder_gguf) {
+long zonos3_engine_init(const char * backbone_gguf, const char * decoder_gguf, const char * steer_gguf) {
     auto * e = new zonos3_engine();
     long sz = 0;
     if (!file_exists_with_size(backbone_gguf, sz)) {
@@ -81,6 +137,15 @@ long zonos3_engine_init(const char * backbone_gguf, const char * decoder_gguf) {
             return (long) e;
         }
         e->decoder_ok = true;
+    }
+    if (steer_gguf && steer_gguf[0] && file_exists_with_size(steer_gguf, sz)) {
+        std::string serr;
+        if (zonos3_steer_load(e->steer, steer_gguf, e->model, serr)) {
+            e->steer_ok = true;
+            ZLOGI("engine_init: steer bundle '%s': %zu directions", e->steer.name.c_str(), e->steer.dirs.size());
+        } else {
+            ZLOGE("engine_init: steer load failed: %s", serr.c_str());
+        }
     }
     return (long) e;
 }
@@ -111,17 +176,22 @@ void zonos3_engine_clear_speaker(long handle) {
 
 // Shared generation: returns codec rows (prefill + generated), eos and prefill via out params.
 static bool engine_generate(zonos3_engine * e, const std::string & text, uint32_t seed,
-                            int max_frames, std::vector<int32_t> & codes_out,
+                            int max_frames, const std::string & controls_str,
+                            std::vector<int32_t> & codes_out,
                             int & total_rows, int & ncb, int & prefill, int & eos_frame,
                             const zonos3_frame_cb & on_frame) {
     if (!e->model_ok) { set_err(e, "engine not initialized"); return false; }
     zonos3_prompt_options opt;
-    if (!e->speaker.empty()) {
-        if ((int) e->speaker.size() != (int) e->model.hp.speaker_dim) {
+    std::vector<float> spk = e->speaker; // copy: raw steering moves the copy, never the stored embedding
+    zonos3_steering steering;
+    const zonos3_steering * steering_ptr = nullptr;
+    if (!engine_apply_controls(e, controls_str, spk, steering, &steering_ptr)) return false;
+    if (!spk.empty()) {
+        if ((int) spk.size() != (int) e->model.hp.speaker_dim) {
             set_err(e, "speaker embedding must have " + std::to_string(e->model.hp.speaker_dim) + " floats");
             return false;
         }
-        opt.speaker_embedding = e->speaker.data();
+        opt.speaker_embedding = spk.data();
     }
     zonos3_prompt prompt;
     std::string err;
@@ -135,7 +205,7 @@ static bool engine_generate(zonos3_engine * e, const std::string & text, uint32_
     std::vector<int32_t> generated;
     int rc = zonos3_generate(e->model, prompt, max_frames, sp, /*cfg_scale=*/1.0f,
                              generated, eos_frame, /*use_kv=*/true,
-                             /*out_full_ids=*/nullptr, on_frame);
+                             /*out_full_ids=*/nullptr, on_frame, steering_ptr);
     if (rc < 0) { set_err(e, "generation failed"); return false; }
 
     ncb = (int) e->model.hp.n_codebooks;
@@ -148,7 +218,7 @@ static bool engine_generate(zonos3_engine * e, const std::string & text, uint32_
 
 // Blocking synthesis: whole utterance to float PCM (44.1 kHz mono), mirroring emit_output().
 bool zonos3_engine_synthesize(long handle, const char * text, uint32_t seed, int max_frames,
-                              std::vector<float> & pcm_out) {
+                              const char * controls, std::vector<float> & pcm_out) {
     auto * e = (zonos3_engine *) handle;
     if (!e) return false;
     std::lock_guard<std::mutex> lock(e->mu);
@@ -156,7 +226,7 @@ bool zonos3_engine_synthesize(long handle, const char * text, uint32_t seed, int
 
     std::vector<int32_t> codes;
     int total = 0, ncb = 0, prefill = 0, eos_frame = -1;
-    if (!engine_generate(e, text, seed, max_frames, codes, total, ncb, prefill, eos_frame, {}))
+    if (!engine_generate(e, text, seed, max_frames, controls ? controls : "", codes, total, ncb, prefill, eos_frame, {}))
         return false;
 
     if (!zac_decode(e->decoder, codes.data(), total, ncb, eos_frame, pcm_out)) {
@@ -175,6 +245,7 @@ bool zonos3_engine_synthesize(long handle, const char * text, uint32_t seed, int
 // frames decode (incremental causal decode of the same output the blocking path renders).
 // The last ~(n_codebooks-1) frames are held back so audio past EOS is never delivered.
 bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t seed, int max_frames,
+                                     const char * controls,
                                      const std::function<bool(const float * pcm, size_t n)> & chunk_cb) {
     auto * e = (zonos3_engine *) handle;
     if (!e) return false;
@@ -183,6 +254,10 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
 
     std::vector<int32_t> codes;      // growing sheared matrix [rows, ncb]
     int rows = 0, ncb = (int) e->model.hp.n_codebooks, prefill = 0;
+    // The decoder only consumes its own codebooks (keep2 = 2 of the backbone's 10), so the
+    // decodable-frame limit and the delivery holdback use the DECODER's codebook count, not
+    // the backbone's - using hp.n_codebooks here starved the tail (0.1.1 dropped the last ~0.25 s).
+    const int dncb = e->decoder.n_codebooks;
     const int spf = zac_samples_per_frame(e->decoder);
     zac_stream stream;
     bool stream_started = false;
@@ -192,7 +267,7 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
 
     // EOS is only known when generation stops; hold back the tail so the post-EOS drain
     // frames never reach the listener.
-    const size_t holdback = (size_t) (ncb - 1) * (size_t) spf;
+    const size_t holdback = (size_t) (dncb - 1) * (size_t) spf;
 
     auto pump = [&](int f_hi) {
         if (f_hi <= 0) return;
@@ -224,13 +299,17 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
         (void) frame_idx;
         codes.insert(codes.end(), frame_codes, frame_codes + f_ncb);
         rows++;
-        pump(rows - (ncb - 1)); // only frames with their full sheared window decode
+        pump(rows - (dncb - 1)); // only frames with their full sheared window decode
         return ok;
     };
 
     std::string text_copy(text);
     zonos3_prompt_options opt;
-    if (!e->speaker.empty()) opt.speaker_embedding = e->speaker.data();
+    std::vector<float> spk = e->speaker; // copy: raw steering moves the copy, never the stored embedding
+    zonos3_steering steering;
+    const zonos3_steering * steering_ptr = nullptr;
+    if (!engine_apply_controls(e, controls ? controls : "", spk, steering, &steering_ptr)) return false;
+    if (!spk.empty()) opt.speaker_embedding = spk.data();
     zonos3_prompt prompt;
     std::string err;
     if (!zonos3_build_prompt(e->model, text_copy, opt, prompt, &err)) { set_err(e, "prompt: " + err); return false; }
@@ -246,10 +325,13 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
     std::vector<int32_t> generated;
     int eos_frame = -1;
     int rc = zonos3_generate(e->model, prompt, max_frames, sp, 1.0f, generated, eos_frame, true,
-                             nullptr, on_frame);
+                             nullptr, on_frame, steering_ptr);
     if (rc < 0 || !ok) { set_err(e, "generation failed"); return false; }
 
-    // Flush the decoder tail, then deliver everything up to the EOS boundary.
+    // Decode any rows the per-frame pumps could not finish (their residual codebook arrived with a
+    // later row), then flush the decoder tail and deliver everything up to the EOS boundary.
+    pump(rows - (dncb - 1));
+    if (!ok) { set_err(e, "generation failed"); return false; }
     std::vector<float> tail;
     if (!zac_stream_flush(e->decoder, stream, tail)) { set_err(e, "stream flush failed"); return false; }
     pending.insert(pending.end(), tail.begin(), tail.end());
@@ -266,6 +348,9 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
     size_t n = std::min(n_avail, remaining);
     if (n > 0) chunk_cb(p, n);
     delivered += n;
+    if (delivered < keep_total)
+        ZLOGE("stream under-delivered: %zu of %zu samples (eos=%d prefill=%d rows=%d)",
+              delivered, keep_total, eos_frame, prefill, rows);
 
     // Apply the decoder headroom gain to everything delivered: done below by the caller of
     // the blocking path; here we gain-adjust per chunk in pump... instead we adjust the
@@ -347,10 +432,10 @@ static auto jni_guard(JNIEnv * env, F && f) -> decltype(f()) {
 extern "C" {
 
 JNIEXPORT jlong JNICALL Java_com_zyphra_zonos3_Zonos3_nativeInit(JNIEnv * env, jclass,
-                                                                 jstring backbone, jstring decoder) {
+                                                                 jstring backbone, jstring decoder, jstring steer) {
     return jni_guard(env, [&]() -> jlong {
-        std::string b = jstr(env, backbone), d = jstr(env, decoder);
-        return (jlong) zonos3_engine_init(b.c_str(), d.c_str());
+        std::string b = jstr(env, backbone), d = jstr(env, decoder), s = jstr(env, steer);
+        return (jlong) zonos3_engine_init(b.c_str(), d.c_str(), s.c_str());
     });
 }
 
@@ -369,10 +454,10 @@ JNIEXPORT jint JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSampleRate(JNIEnv *, 
 }
 
 JNIEXPORT jfloatArray JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesize(JNIEnv * env, jclass, jlong h,
-                                                                             jstring text, jint seed, jint maxFrames) {
+                                                                             jstring text, jint seed, jint maxFrames, jstring controls) {
     return jni_guard(env, [&]() -> jfloatArray {
         std::vector<float> pcm;
-        if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, pcm)) return nullptr;
+        if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, jstr(env, controls).c_str(), pcm)) return nullptr;
         jfloatArray out = env->NewFloatArray((jsize) pcm.size());
         env->SetFloatArrayRegion(out, 0, (jsize) pcm.size(), pcm.data());
         return out;
@@ -381,22 +466,23 @@ JNIEXPORT jfloatArray JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesize(JNI
 
 JNIEXPORT jboolean JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesizeToFile(JNIEnv * env, jclass, jlong h,
                                                                                 jstring text, jstring path,
-                                                                                jint seed, jint maxFrames) {
+                                                                                jint seed, jint maxFrames, jstring controls) {
     return jni_guard(env, [&]() -> jboolean {
         std::vector<float> pcm;
-        if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, pcm)) return JNI_FALSE;
+        if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, jstr(env, controls).c_str(), pcm)) return JNI_FALSE;
         return wav_pcm16_write(jstr(env, path).c_str(), pcm, 44100) ? JNI_TRUE : JNI_FALSE;
     });
 }
 
 JNIEXPORT jboolean JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesizeStreaming(JNIEnv * env, jclass, jlong h,
                                                                                    jstring text, jint seed,
-                                                                                   jint maxFrames, jobject listener) {
+                                                                                   jint maxFrames, jstring controls, jobject listener) {
     return jni_guard(env, [&]() -> jboolean {
         jclass cls = env->GetObjectClass(listener);
         jmethodID onChunk = env->GetMethodID(cls, "onChunk", "([F)V");
         if (!onChunk) return JNI_FALSE;
         bool ok = zonos3_engine_synthesize_stream(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames,
+            jstr(env, controls).c_str(),
             [&](const float * pcm, size_t n) -> bool {
                 jfloatArray arr = env->NewFloatArray((jsize) n);
                 env->SetFloatArrayRegion(arr, 0, (jsize) n, pcm);
@@ -457,23 +543,30 @@ JNIEXPORT jfloatArray JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSpkEmbed(JNIEn
 
 int main(int argc, char ** argv) {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <backbone.gguf> <zac-keep2.gguf> <text> [out.wav] [--stream]\n", argv[0]);
+        fprintf(stderr, "usage: %s <backbone.gguf> <zac-keep2.gguf> <text> [out.wav] [--stream] [--steer steer.gguf] [--controls \"id=dose;...\"]\n", argv[0]);
         return 2;
     }
     const char * backbone = argv[1];
     const char * decoder = argv[2];
     const char * text = argv[3];
     const char * out_wav = argc > 4 ? argv[4] : "/tmp/zonos3-test.wav";
-    bool stream = argc > 5 && !strcmp(argv[5], "--stream");
+    bool stream = false;
+    const char * steer = "";
+    const char * controls = "";
+    for (int i = 5; i < argc; i++) {
+        if (!strcmp(argv[i], "--stream")) stream = true;
+        else if (!strcmp(argv[i], "--steer") && i + 1 < argc) steer = argv[++i];
+        else if (!strcmp(argv[i], "--controls") && i + 1 < argc) controls = argv[++i];
+    }
 
-    long h = zonos3_engine_init(backbone, decoder);
+    long h = zonos3_engine_init(backbone, decoder, steer);
     if (!h) { fprintf(stderr, "init failed\n"); return 1; }
 
     bool ok;
     if (stream) {
         std::vector<float> all;
         int chunks = 0;
-        ok = zonos3_engine_synthesize_stream(h, text, /*seed=*/1, /*max_frames=*/0,
+        ok = zonos3_engine_synthesize_stream(h, text, /*seed=*/1, /*max_frames=*/0, controls,
             [&](const float * pcm, size_t n) {
                 all.insert(all.end(), pcm, pcm + n);
                 chunks++;
@@ -484,7 +577,7 @@ int main(int argc, char ** argv) {
         if (ok) ok = wav_pcm16_write(out_wav, all, 44100);
     } else {
         std::vector<float> pcm;
-        ok = zonos3_engine_synthesize(h, text, /*seed=*/1, /*max_frames=*/0, pcm);
+        ok = zonos3_engine_synthesize(h, text, /*seed=*/1, /*max_frames=*/0, controls, pcm);
         fprintf(stderr, "synthesized %zu samples (%.2f s)\n", pcm.size(), pcm.size() / 44100.0);
         if (ok) ok = wav_pcm16_write(out_wav, pcm, 44100);
     }

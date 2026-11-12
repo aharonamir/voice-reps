@@ -44,8 +44,18 @@ class ModelDownloadActivity : AppCompatActivity() {
             detail.text = "Warning: the native engine failed to load on this device ($it). Voice features will not work."
         }
 
-        status.text = "Voice models needed"
-        detail.text = "voice-reps runs entirely on your device. One-time download: ~1.2 GB of ZONOS3-Mini model files (Apache 2.0, from Zyphra on Hugging Face). Wi-Fi recommended."
+        val missingBytes = Zonos3Engine.requiredFiles
+            .filter { Zonos3Engine.modelFile(this, it.name).length() < it.minBytes }
+            .sumOf { it.minBytes }
+        if (missingBytes < 100_000_000L) {
+            // Small follow-up file (e.g. steer.gguf for expression controls added in 0.1.2) on top of an
+            // existing install - do not scare the user with the full 1.2 GB message.
+            status.text = "Quick model update"
+            detail.text = "A small new model file (under 1 MB) enables expression and emotion controls. Your existing models stay as they are."
+        } else {
+            status.text = "Voice models needed"
+            detail.text = "voice-reps runs entirely on your device. One-time download: ~1.2 GB of ZONOS3-Mini model files (Apache 2.0, from Zyphra on Hugging Face). Wi-Fi recommended."
+        }
         action.text = "Download"
         action.setOnClickListener { startDownload() }
     }

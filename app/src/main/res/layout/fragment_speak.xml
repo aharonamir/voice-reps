@@ -7,7 +7,61 @@
     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:text="Voice" android:textColor="@color/text_secondary" android:textSize="13sp" />
     <Spinner android:id="@+id/voice_spinner" android:layout_width="match_parent"
-        android:layout_height="wrap_content" android:layout_marginBottom="12dp" />
+        android:layout_height="wrap_content" android:layout_marginBottom="8dp" />
+
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="Emotion" android:textColor="@color/text_secondary" android:textSize="13sp" />
+    <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:scrollbars="none" android:layout_marginBottom="4dp">
+        <com.google.android.material.chip.ChipGroup android:id="@+id/emotion_chips"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            app:singleLine="true" app:singleSelection="true" app:selectionRequired="true"
+            app:checkedChip="@+id/chip_neutral">
+            <com.google.android.material.chip.Chip android:id="@+id/chip_neutral"
+                style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:text="Neutral" />
+            <com.google.android.material.chip.Chip style="@style/Widget.MaterialComponents.Chip.Choice"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Happy" />
+            <com.google.android.material.chip.Chip style="@style/Widget.MaterialComponents.Chip.Choice"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Sad" />
+            <com.google.android.material.chip.Chip style="@style/Widget.MaterialComponents.Chip.Choice"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Angry" />
+            <com.google.android.material.chip.Chip style="@style/Widget.MaterialComponents.Chip.Choice"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Calm" />
+            <com.google.android.material.chip.Chip style="@style/Widget.MaterialComponents.Chip.Choice"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Excited" />
+            <com.google.android.material.chip.Chip style="@style/Widget.MaterialComponents.Chip.Choice"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Whisper" />
+        </com.google.android.material.chip.ChipGroup>
+    </HorizontalScrollView>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:layout_width="72dp" android:layout_height="wrap_content"
+            android:text="Pitch" android:textColor="@color/text_secondary" android:textSize="13sp" />
+        <SeekBar android:id="@+id/pitch_bar" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" />
+        <TextView android:id="@+id/pitch_val" android:layout_width="40dp" android:layout_height="wrap_content"
+            android:gravity="end" android:text="0" android:textColor="@color/text_secondary" android:textSize="13sp" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:layout_width="72dp" android:layout_height="wrap_content"
+            android:text="Expression" android:textColor="@color/text_secondary" android:textSize="13sp" />
+        <SeekBar android:id="@+id/expression_bar" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" />
+        <TextView android:id="@+id/expression_val" android:layout_width="40dp" android:layout_height="wrap_content"
+            android:gravity="end" android:text="0" android:textColor="@color/text_secondary" android:textSize="13sp" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
+        <TextView android:layout_width="72dp" android:layout_height="wrap_content"
+            android:text="Pace" android:textColor="@color/text_secondary" android:textSize="13sp" />
+        <SeekBar android:id="@+id/pace_bar" android:layout_width="0dp" android:layout_weight="1"
+            android:layout_height="wrap_content" />
+        <TextView android:id="@+id/pace_val" android:layout_width="40dp" android:layout_height="wrap_content"
+            android:gravity="end" android:text="0" android:textColor="@color/text_secondary" android:textSize="13sp" />
+    </LinearLayout>
 
     <com.google.android.material.textfield.TextInputEditText android:id="@+id/speak_input"
         android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"

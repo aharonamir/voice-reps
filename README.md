@@ -24,13 +24,20 @@ No account, no server, no audio leaves the device.
   JNI bridge (`com.zyphra.zonos3.Zonos3`). Only the core synthesis + speaker-encoder libraries are
   linked - the HTTP server and its Rust text-normalizer are not needed on device
   (`ZONOS3_SERVER=OFF`, a one-option patch on top of upstream).
-- On first launch the app downloads three GGUF files (~1.2 GB total) from the public Hugging Face
+- On first launch the app downloads four GGUF files (~1.2 GB total) from the public Hugging Face
   repo - no token required:
   - `backbone-ptq.gguf` (663 MB) - the backbone, Q4 experts / Q8 mixers (~100M active params/token)
     (upstream renamed it from `zonos3-ptq.gguf` on 2026-11-11; 0.1.1 follows the new name and
     migrates an already-downloaded local copy)
   - `zac-keep2.gguf` (452 MB) - the ZAC-1 waveform decoder (44.1 kHz)
   - `spk-encoder.gguf` (45 MB) - the MECT-B2 speaker encoder used to build voice profiles
+  - `steer.gguf` (0.2 MB) - steering directions behind the expression controls
+- **Expression controls** (Speak tab): an emotion preset (Neutral, Happy, Sad, Angry, Calm,
+  Excited, Whisper) plus Pitch, Expression and Pace sliders. These map to the engine's steering
+  directions (`emotions.*`, `delivery.pitch`, `expressive.expressive`, `delivery.tempo`, ...),
+  resolved through `steer.gguf` at generation time; doses stay inside the studio bundle's safe
+  ranges. The emotion/delivery directions are hidden-space, so they also work with the default
+  voice; raw-space directions would move the speaker embedding and apply to saved voices only.
 - Voice profiles are stored locally (`files/voices/`): the reference WAV + raw float32 embedding.
 
 ## Build
@@ -74,6 +81,13 @@ generating.
 
 ## Changelog
 
+- 0.1.2 (2026-11-12): playback no longer drops the tail of the speech - 0.1.1 stopped and
+  released the AudioTrack 300 ms after the last chunk was written while up to the whole 1 s
+  stream buffer was still queued, cutting the end of the utterance (the missing last word);
+  the player now waits for the written frames to actually play out before stopping.
+  Expression controls on the Speak tab: emotion presets (Happy, Sad, Angry, Calm, Excited,
+  Whisper) and Pitch/Expression/Pace sliders, driven by the engine's steering directions
+  (new 0.2 MB `steer.gguf` model file; existing installs fetch just that file).
 - 0.1.1 (2026-11-12): crash fix - statically link ggml into libzonos3jni.so (0.1.0's APK was
   missing libggml.so/libggml-cpu.so/libggml-base.so, so the first native call -
   create voice or speak - killed the app); backbone download URL updated to the renamed

@@ -16,6 +16,7 @@ object Zonos3Engine {
     private const val BACKBONE = "backbone-ptq.gguf" // 663 MB, Q4 experts / Q8 mixers (renamed upstream 2026-11-11, was zonos3-ptq.gguf)
     private const val DECODER = "zac-keep2.gguf"     // 452 MB, waveform decoder
     private const val SPK = "spk-encoder.gguf"       // 45 MB, speaker encoder
+    private const val STEER = "steer.gguf"           // 0.2 MB, expression/emotion steering directions
 
     data class ModelFile(val name: String, val minBytes: Long) {
         val url get() = "$HF_BASE/$name"
@@ -25,6 +26,7 @@ object Zonos3Engine {
         ModelFile(BACKBONE, 600_000_000L),
         ModelFile(DECODER, 400_000_000L),
         ModelFile(SPK, 40_000_000L),
+        ModelFile(STEER, 100_000L),
     )
 
     fun modelsDir(ctx: Context) = File(ctx.filesDir, "models").apply {
@@ -56,8 +58,9 @@ object Zonos3Engine {
         if (engine == 0L) {
             val b = modelFile(ctx, BACKBONE)
             val d = modelFile(ctx, DECODER)
-            Log.i(TAG, "init engine: backbone=${b.absolutePath} (${b.length()} bytes), decoder=${d.absolutePath} (${d.length()} bytes)")
-            engine = Zonos3.nativeInit(b.absolutePath, d.absolutePath)
+            val s = modelFile(ctx, STEER)
+            Log.i(TAG, "init engine: backbone=${b.absolutePath} (${b.length()} bytes), decoder=${d.absolutePath} (${d.length()} bytes), steer=${s.absolutePath} (${s.length()} bytes)")
+            engine = Zonos3.nativeInit(b.absolutePath, d.absolutePath, s.absolutePath)
             val err = Zonos3.nativeLastError(engine)
             Log.i(TAG, "engine handle=$engine, native error='${err}'")
             if (err.isNotEmpty()) lastNativeError = err
@@ -79,27 +82,27 @@ object Zonos3Engine {
 
     fun lastError(handle: Long): String = try { Zonos3.nativeLastError(handle) } catch (t: Throwable) { "$t" }
 
-    /** Synthesize text with a saved 192-d voice embedding (null = default voice). */
-    fun synthesize(ctx: Context, text: String, embedding: FloatArray?): FloatArray? = try {
+    /** Synthesize text with a saved 192-d voice embedding (null = default voice). controls: "id=dose;..." steering ("" = none). */
+    fun synthesize(ctx: Context, text: String, embedding: FloatArray?, controls: String = ""): FloatArray? = try {
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
-        val pcm = Zonos3.nativeSynthesize(h, text, seed(), 0)
+        val pcm = Zonos3.nativeSynthesize(h, text, seed(), 0, controls)
         if (pcm == null) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "synthesis returned no audio" }
         pcm
     } catch (t: Throwable) { fail("synthesize", t) }
 
-    fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, listener: Zonos3.PcmListener): Boolean = try {
+    fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, controls: String = "", listener: Zonos3.PcmListener): Boolean = try {
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
-        val ok = Zonos3.nativeSynthesizeStreaming(h, text, seed(), 0, listener)
+        val ok = Zonos3.nativeSynthesizeStreaming(h, text, seed(), 0, controls, listener)
         if (!ok) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "streaming synthesis failed" }
         ok
     } catch (t: Throwable) { fail("synthesizeStreaming", t); false }
 
-    fun synthesizeToWav(ctx: Context, text: String, embedding: FloatArray?, wav: File): Boolean = try {
+    fun synthesizeToWav(ctx: Context, text: String, embedding: FloatArray?, wav: File, controls: String = ""): Boolean = try {
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
-        val ok = Zonos3.nativeSynthesizeToFile(h, text, wav.absolutePath, seed(), 0)
+        val ok = Zonos3.nativeSynthesizeToFile(h, text, wav.absolutePath, seed(), 0, controls)
         if (!ok) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "WAV render failed" }
         ok
     } catch (t: Throwable) { fail("synthesizeToWav", t); false }

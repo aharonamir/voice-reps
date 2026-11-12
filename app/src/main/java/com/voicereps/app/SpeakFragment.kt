@@ -10,9 +10,12 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import androidx.core.content.FileProvider
 import androidx.fragment.app.Fragment
 import java.io.File
@@ -35,6 +38,13 @@ class SpeakFragment : Fragment() {
     private var lastWav: File? = null
     @Volatile private var busy = false
 
+    // Expression controls: an emotion preset plus pitch/expression/pace sliders. Doses follow the
+    // safe ranges of the engine's studio steering bundle (steer.gguf, ids as in /v2/controls).
+    private var emotion = "Neutral"
+    private var pitch = 0.0      // delivery.pitch, -3..3 (safe +/-2)
+    private var expressive = 0.0 // expressive.expressive, -4..8 (safe +/-8)
+    private var pace = 0.0       // delivery.tempo, -2..2 (safe +/-2)
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, saved: Bundle?): View =
         inflater.inflate(R.layout.fragment_speak, container, false)
 
@@ -50,6 +60,15 @@ class SpeakFragment : Fragment() {
         speakBtn.setOnClickListener { speak() }
         saveBtn.setOnClickListener { saveAndShare() }
 
+        val chips: ChipGroup = view.findViewById(R.id.emotion_chips)
+        chips.setOnCheckedStateChangeListener { group, ids ->
+            val c = ids.firstOrNull()?.let { group.findViewById<Chip>(it) }
+            emotion = c?.text?.toString() ?: "Neutral"
+        }
+        bindSlider(view, R.id.pitch_bar, R.id.pitch_val, 6, 12) { pitch = it }
+        bindSlider(view, R.id.expression_bar, R.id.expression_val, 8, 24) { expressive = it }
+        bindSlider(view, R.id.pace_bar, R.id.pace_val, 4, 8) { pace = it }
+
         input.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
@@ -63,6 +82,40 @@ class SpeakFragment : Fragment() {
             }
         })
         refreshVoices()
+    }
+
+    /** SeekBar of half steps centered at `zero` (value = (progress - zero) * 0.5). */
+    private fun bindSlider(view: View, barId: Int, valId: Int, zero: Int, max: Int, set: (Double) -> Unit) {
+        val bar = view.findViewById<SeekBar>(barId)
+        val label = view.findViewById<TextView>(valId)
+        bar.max = max
+        bar.progress = zero
+        label.text = "0"
+        bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                val v = (p - zero) * 0.5
+                set(v)
+                label.text = if (v == 0.0) "0" else String.format("%+.1f", v)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+    }
+
+    private fun controlsString(): String {
+        val m = linkedMapOf<String, Double>()
+        when (emotion) {
+            "Happy" -> m["emotions.happy"] = 2.0
+            "Sad" -> m["emotions.sad"] = 4.0
+            "Angry" -> m["emotions.angry"] = 2.0
+            "Calm" -> m["emotions.serene"] = 4.0
+            "Excited" -> { m["emotions.ecstatic"] = 2.0; m["mood.arousal"] = 1.0 }
+            "Whisper" -> m["delivery.whisper"] = 1.5
+        }
+        if (pitch != 0.0) m["delivery.pitch"] = pitch
+        if (expressive != 0.0) m["expressive.expressive"] = expressive
+        if (pace != 0.0) m["delivery.tempo"] = pace
+        return m.entries.joinToString(";") { "${it.key}=${it.value}" }
     }
 
     fun refreshVoices() {
@@ -92,23 +145,23 @@ class SpeakFragment : Fragment() {
         val emb = if (selected > 0) store.embeddingOf(voices[selected - 1]) else null
         val appCtx = requireContext().applicationContext
 
+        val controls = controlsString()
         Thread {
             try {
                 var firstChunkAt = 0L
                 val t0 = System.currentTimeMillis()
                 val track = player.beginStream()
-                val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, object : com.zyphra.zonos3.Zonos3.PcmListener {
+                val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, controls, object : com.zyphra.zonos3.Zonos3.PcmListener {
                     override fun onChunk(pcm: FloatArray) {
                         if (firstChunkAt == 0L) {
                             firstChunkAt = System.currentTimeMillis()
                             val ms = firstChunkAt - t0
                             activity?.runOnUiThread { status.text = "Speaking... (first audio in ${ms}ms)" }
                         }
-                        track.write(pcm, 0, pcm.size, android.media.AudioTrack.WRITE_BLOCKING)
+                        player.writeStream(track, pcm)
                     }
                 })
-                Thread.sleep(300) // let the last chunk drain
-                player.stop()
+                player.finishStream() // play out the buffered tail before releasing (was cutting the last word)
                 activity?.runOnUiThread {
                     busy = false
                     speakBtn.isEnabled = true
@@ -140,10 +193,11 @@ class SpeakFragment : Fragment() {
         saveBtn.isEnabled = false
         val emb = if (selected > 0) store.embeddingOf(voices[selected - 1]) else null
         val appCtx = requireContext().applicationContext
+        val controls = controlsString()
         Thread {
             try {
                 val wav = File(appCtx.cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
-                val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav)
+                val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav, controls)
                 activity?.runOnUiThread {
                     saveBtn.isEnabled = true
                     if (ok) {
