@@ -262,8 +262,10 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
     zac_stream stream;
     bool stream_started = false;
     std::vector<float> pending;      // decoded but not yet delivered (prefill drop + holdback)
-    size_t delivered = 0;
+    size_t delivered = 0; // audible samples only, never the discarded prefill
+    size_t prefill_remaining = 0;
     bool ok = true;
+    const float gain = zac_output_gain(e->decoder, /*headroom_db=*/-1.0);
 
     // EOS is only known when generation stops; hold back the tail so the post-EOS drain
     // frames never reach the listener.
@@ -278,17 +280,18 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
         }
         if (!zac_stream_decode(e->decoder, stream, codes.data(), rows, f_hi, chunk)) { ok = false; return; }
         pending.insert(pending.end(), chunk.begin(), chunk.end());
-        // Drop the silence-prefill audio once, from the front.
-        const size_t prefill_samples = (size_t) prefill * (size_t) spf;
-        if (delivered + pending.size() <= prefill_samples) return; // all prefill so far
-        size_t skip = 0;
-        if (delivered < prefill_samples) skip = prefill_samples - delivered;
-        size_t avail = pending.size() - skip;
-        if (avail > holdback) {
-            size_t n = avail - holdback;
-            if (!chunk_cb(pending.data() + skip, n)) { ok = false; return; }
+        // Track discarded prefill separately. Using `delivered` for both counts
+        // repeatedly discarded real speech in short utterances (and could underflow).
+        const size_t skip = std::min(prefill_remaining, pending.size());
+        pending.erase(pending.begin(), pending.begin() + skip);
+        prefill_remaining -= skip;
+        if (pending.size() > holdback) {
+            const size_t n = pending.size() - holdback;
+            for (size_t i = 0; i < n; ++i) pending[i] *= gain;
+            zonos3_soft_limit(pending.data(), n);
+            if (!chunk_cb(pending.data(), n)) { ok = false; return; }
             delivered += n;
-            pending.erase(pending.begin(), pending.begin() + skip + n);
+            pending.erase(pending.begin(), pending.begin() + n);
         }
     };
 
@@ -314,6 +317,7 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
     std::string err;
     if (!zonos3_build_prompt(e->model, text_copy, opt, prompt, &err)) { set_err(e, "prompt: " + err); return false; }
     prefill = prompt.prefill_frames;
+    prefill_remaining = (size_t) prefill * (size_t) spf;
     codes = zonos3_prefill_codes(e->model, prompt);
     rows = prefill;
     prefill_prepended = true;
@@ -336,26 +340,26 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
     if (!zac_stream_flush(e->decoder, stream, tail)) { set_err(e, "stream flush failed"); return false; }
     pending.insert(pending.end(), tail.begin(), tail.end());
 
-    const size_t prefill_samples = (size_t) prefill * (size_t) spf;
-    size_t keep_total; // samples to deliver in total (prefill excluded)
-    int audio_frames = eos_frame >= 0 ? eos_frame : (int) generated.size() / ncb;
-    keep_total = (size_t) std::max(0, audio_frames - prefill) * (size_t) spf;
-
-    size_t skip = delivered < prefill_samples ? prefill_samples - delivered : 0;
-    const float * p = pending.data() + skip;
-    size_t n_avail = pending.size() - skip;
-    size_t remaining = keep_total > delivered ? keep_total - delivered : 0;
-    size_t n = std::min(n_avail, remaining);
-    if (n > 0) chunk_cb(p, n);
-    delivered += n;
-    if (delivered < keep_total)
-        ZLOGE("stream under-delivered: %zu of %zu samples (eos=%d prefill=%d rows=%d)",
-              delivered, keep_total, eos_frame, prefill, rows);
-
-    // Apply the decoder headroom gain to everything delivered: done below by the caller of
-    // the blocking path; here we gain-adjust per chunk in pump... instead we adjust the
-    // already-collected chunks at once via a second pass in the JNI/Kotlin layer? No:
-    // keep parity with emit_output by applying the gain inside this wrapper per chunk.
+    // Match zac_decode: EOS is an absolute frame in the combined prefill +
+    // generated matrix; without EOS only rows with complete codebooks can decode.
+    const int decodable = std::max(0, rows - (dncb - 1));
+    const int audio_frames = eos_frame >= 0 ? std::min(eos_frame, decodable) : decodable;
+    const size_t keep_total = (size_t) std::max(0, audio_frames - prefill) * (size_t) spf;
+    const size_t skip = std::min(prefill_remaining, pending.size());
+    pending.erase(pending.begin(), pending.begin() + skip);
+    prefill_remaining -= skip;
+    const size_t remaining = keep_total > delivered ? keep_total - delivered : 0;
+    const size_t n = std::min(pending.size(), remaining);
+    if (n > 0) {
+        for (size_t i = 0; i < n; ++i) pending[i] *= gain;
+        zonos3_soft_limit(pending.data(), n);
+        if (!chunk_cb(pending.data(), n)) { set_err(e, "audio listener interrupted"); return false; }
+        delivered += n;
+    }
+    if (delivered == 0 || delivered != keep_total) {
+        set_err(e, "stream returned " + std::to_string(delivered) + " of " + std::to_string(keep_total) + " audio samples");
+        return false;
+    }
     return true;
 }
 

@@ -10,7 +10,7 @@ For a future authorized build agent:
    ```sh
    umask 077
    mkdir -p "$HOME/.config/voice-reps"
-   openssl enc -d -aes-256-cbc -pbkdf2 -in signing/voice-reps.keystore.enc \
+   openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in signing/voice-reps.keystore.enc \
      -out "$HOME/.config/voice-reps/signing.p12" -pass file:/path/to/private-vault-file
    ```
 

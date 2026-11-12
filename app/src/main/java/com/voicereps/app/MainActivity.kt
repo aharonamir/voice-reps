@@ -6,36 +6,47 @@ import androidx.fragment.app.Fragment
 import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
-
-    private val voices = VoicesFragment()
-    private val record = RecordFragment()
-    private val speak = SpeakFragment()
-    private var active: Fragment = voices
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
         setContentView(R.layout.activity_main)
 
-        supportFragmentManager.beginTransaction()
-            .add(R.id.fragment_container, speak, "speak").hide(speak)
-            .add(R.id.fragment_container, record, "record").hide(record)
-            .add(R.id.fragment_container, voices, "voices")
-            .commit()
-
-        findViewById<BottomNavigationView>(R.id.bottom_nav).setOnItemSelectedListener { item ->
-            val next = when (item.itemId) {
-                R.id.nav_record -> record
-                R.id.nav_speak -> speak
-                else -> voices
+        // FragmentManager restores the existing screens in super.onCreate(). Adding a
+        // second set here leaves overlapping views and independent playback state.
+        val fm = supportFragmentManager
+        val voices = fm.findFragmentByTag("voices") ?: VoicesFragment()
+        val record = fm.findFragmentByTag("record") ?: RecordFragment()
+        val speak = fm.findFragmentByTag("speak") ?: SpeakFragment()
+        val screens = listOf(voices to "voices", record to "record", speak to "speak")
+        val nav = findViewById<BottomNavigationView>(R.id.bottom_nav)
+        val selectedId = savedInstanceState?.getInt("selected_tab", R.id.nav_voices) ?: R.id.nav_voices
+        fun screen(id: Int): Fragment = when (id) {
+            R.id.nav_record -> record
+            R.id.nav_speak -> speak
+            else -> voices
+        }
+        var active = screen(selectedId)
+        fm.beginTransaction().apply {
+            for ((fragment, tag) in screens) {
+                if (!fragment.isAdded) add(R.id.fragment_container, fragment, tag)
+                if (fragment === active) show(fragment) else hide(fragment)
             }
-            if (next != active) {
-                supportFragmentManager.beginTransaction().hide(active).show(next).commit()
+        }.commitNow()
+        nav.selectedItemId = selectedId
+        nav.setOnItemSelectedListener { item ->
+            val next = screen(item.itemId)
+            if (next !== active) {
+                fm.beginTransaction().hide(active).show(next).commit()
                 active = next
                 if (next is SpeakFragment) next.refreshVoices()
                 if (next is VoicesFragment) next.refreshVoices()
             }
             true
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("selected_tab", findViewById<BottomNavigationView>(R.id.bottom_nav).selectedItemId)
+        super.onSaveInstanceState(outState)
     }
 }

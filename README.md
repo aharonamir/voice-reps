@@ -109,6 +109,18 @@ generating.
 
 ## Changelog
 
+- 0.1.3 (2026-11-12): reuse restored fragments after Android recreates the activity,
+  instead of stacking duplicate Speak screens. Remember the chosen saved voice. A new
+  playback session is opened only once audio is ready, requests media audio focus, checks
+  media mute state, handles partial/failed writes and drain timeouts, and rejects empty,
+  silent or invalid PCM. Leaving Speak stops its player and invalidates old UI callbacks;
+  the next Speak starts a fresh audio session. Speak and WAV export cannot race over the
+  shared native speaker state. Failed model initialization is not cached as a ready engine.
+  Failures appear in a dialog and the existing on-device crash log.
+  Native streaming now counts discarded prefill separately from delivered speech, bounds
+  tail slicing, checks callback failure/short output and applies the same gain as WAV export.
+  Rebuilt the bundled arm64 library. See `tests/README.md` for verification and limits.
+
 - 0.1.2 (2026-11-12): playback no longer drops the tail of the speech - 0.1.1 stopped and
   released the AudioTrack 300 ms after the last chunk was written while up to the whole 1 s
   stream buffer was still queued, cutting the end of the utterance (the missing last word);

@@ -19,6 +19,7 @@ import com.google.android.material.chip.ChipGroup
 import androidx.core.content.FileProvider
 import androidx.fragment.app.Fragment
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 class SpeakFragment : Fragment() {
 
@@ -37,6 +38,8 @@ class SpeakFragment : Fragment() {
     private var selected: Int = 0 // 0 = default voice
     private var lastWav: File? = null
     @Volatile private var busy = false
+    private val operation = AtomicInteger()
+    private val prefs by lazy { requireContext().getSharedPreferences("speak", 0) }
 
     // Expression controls: an emotion preset plus pitch/expression/pace sliders. Doses follow the
     // safe ranges of the engine's studio steering bundle (steer.gguf, ids as in /v2/controls).
@@ -49,6 +52,7 @@ class SpeakFragment : Fragment() {
         inflater.inflate(R.layout.fragment_speak, container, false)
 
     override fun onViewCreated(view: View, saved: Bundle?) {
+        busy = false
         store = VoiceStore(requireContext())
         spinner = view.findViewById(R.id.voice_spinner)
         input = view.findViewById(R.id.speak_input)
@@ -122,11 +126,52 @@ class SpeakFragment : Fragment() {
         if (!::store.isInitialized) return
         voices = store.list().filter { it.ready }
         val labels = listOf("Default voice") + voices.map { it.name }
+        spinner.onItemSelectedListener = null
         spinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, labels)
-        spinner.setSelection(selected.coerceAtMost(labels.size - 1))
+        val savedId = prefs.getString("voice_id", null)
+        selected = voices.indexOfFirst { it.id == savedId }.let { if (it < 0) 0 else it + 1 }
+        spinner.setSelection(selected)
         spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { selected = pos }
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                selected = pos
+                prefs.edit().putString("voice_id", voices.getOrNull(pos - 1)?.id).apply()
+            }
             override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+    }
+
+    private fun embedding(): FloatArray? {
+        if (selected == 0) return null
+        val voice = voices.getOrNull(selected - 1) ?: error("Choose the saved voice again.")
+        return store.embeddingOf(voice).also { values ->
+            check(values.size == Zonos3Engine.EMBEDDING_DIM && values.all { it.isFinite() }) {
+                "The saved voice profile is invalid. Create the voice again."
+            }
+        }
+    }
+
+    private fun update(id: Int, action: () -> Unit) {
+        activity?.runOnUiThread { if (operation.get() == id && view != null) action() }
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        speakBtn.isEnabled = !value
+        saveBtn.isEnabled = !value
+        spinner.isEnabled = !value
+    }
+
+    private fun reportError(id: Int, appCtx: android.content.Context, where: String, t: Throwable) {
+        if (operation.get() != id) return // expected interruption, not an unexplained failure
+        Log.e(TAG, where, t)
+        CrashLog.record(appCtx, where, t)
+        update(id) {
+            setBusy(false)
+            val detail = t.message ?: t.javaClass.simpleName
+            status.text = "Error: $detail"
+            androidx.appcompat.app.AlertDialog.Builder(requireContext())
+                .setTitle("Could not play the voice").setMessage(detail)
+                .setPositiveButton("OK", null).show()
         }
     }
 
@@ -134,86 +179,77 @@ class SpeakFragment : Fragment() {
         if (busy) return
         val text = input.text.toString().trim()
         if (text.isEmpty()) { toast("Type something to speak"); return }
-        Zonos3Engine.nativeLoadError?.let {
-            status.text = "Native engine failed to load: $it"
-            return
-        }
-        busy = true
-        speakBtn.isEnabled = false
-        saveBtn.isEnabled = false
-        status.text = "Loading engine (first run loads ~1.1 GB of models)..."
-        val emb = if (selected > 0) store.embeddingOf(voices[selected - 1]) else null
+        val id = operation.incrementAndGet()
         val appCtx = requireContext().applicationContext
-
+        setBusy(true)
+        status.text = "Loading engine. Please keep the app open..."
         val controls = controlsString()
+        val emb = try { embedding() } catch (t: Throwable) {
+            reportError(id, appCtx, "load saved voice", t); return
+        }
         Thread {
+            var stream: AudioPlayer.Stream? = null
             try {
-                var firstChunkAt = 0L
                 val t0 = System.currentTimeMillis()
-                val track = player.beginStream()
-                val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, controls, object : com.zyphra.zonos3.Zonos3.PcmListener {
-                    override fun onChunk(pcm: FloatArray) {
-                        if (firstChunkAt == 0L) {
-                            firstChunkAt = System.currentTimeMillis()
-                            val ms = firstChunkAt - t0
-                            activity?.runOnUiThread { status.text = "Speaking... (first audio in ${ms}ms)" }
+                val stats = PcmStats()
+                val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, controls,
+                    object : com.zyphra.zonos3.Zonos3.PcmListener {
+                        override fun onChunk(pcm: FloatArray) {
+                            check(operation.get() == id) { "Playback interrupted" }
+                            stats.add(pcm)
+                            if (pcm.isEmpty()) return
+                            synchronized(player) {
+                                check(operation.get() == id) { "Playback interrupted" }
+                                if (stream == null) {
+                                    stream = player.beginStream(appCtx)
+                                    val ms = System.currentTimeMillis() - t0
+                                    update(id) { status.text = "Speaking... (first audio in ${ms}ms)" }
+                                }
+                            }
+                            player.writeStream(stream!!, pcm)
                         }
-                        player.writeStream(track, pcm)
-                    }
-                })
-                player.finishStream() // play out the buffered tail before releasing (was cutting the last word)
-                activity?.runOnUiThread {
-                    busy = false
-                    speakBtn.isEnabled = true
-                    saveBtn.isEnabled = true
-                    if (ok) {
-                        status.text = "Done. Save to share it as a WAV."
-                    } else {
-                        status.text = "Generation failed: ${Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }}"
-                    }
+                    })
+                check(ok) { Zonos3Engine.lastNativeError.ifEmpty { "Speech generation failed. Try Speak again." } }
+                stats.requireAudible()
+                val finished = stream ?: error("The engine returned no audio. Try Speak again.")
+                player.finishStream(finished)
+                update(id) {
+                    setBusy(false)
+                    status.text = "Done. No sound? Check media volume and Bluetooth."
                 }
             } catch (t: Throwable) {
-                Log.e(TAG, "speak failed", t)
-                CrashLog.record(appCtx, "speak", t)
-                player.stop()
-                activity?.runOnUiThread {
-                    busy = false
-                    speakBtn.isEnabled = true
-                    saveBtn.isEnabled = true
-                    status.text = "Error: ${t.message ?: t.javaClass.simpleName}"
-                }
+                reportError(id, appCtx, "speak", t)
+            } finally {
+                // Only stop our own track, never a newer retry's stream.
+                stream?.let { player.cancelStream(it) }
             }
         }.start()
     }
 
     private fun saveAndShare() {
+        if (busy) return
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
-        status.text = "Rendering WAV..."
-        saveBtn.isEnabled = false
-        val emb = if (selected > 0) store.embeddingOf(voices[selected - 1]) else null
+        val id = operation.incrementAndGet()
         val appCtx = requireContext().applicationContext
+        val emb = try { embedding() } catch (t: Throwable) {
+            reportError(id, appCtx, "load saved voice", t); return
+        }
         val controls = controlsString()
+        setBusy(true)
+        status.text = "Rendering WAV. Please keep the app open..."
         Thread {
             try {
                 val wav = File(appCtx.cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
                 val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav, controls)
-                activity?.runOnUiThread {
-                    saveBtn.isEnabled = true
-                    if (ok) {
-                        lastWav = wav
-                        status.text = "Saved ${wav.name}"
-                        share(wav)
-                    } else status.text = "Render failed: ${Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }}"
+                check(ok && wav.length() > 44) { Zonos3Engine.lastNativeError.ifEmpty { "No audio was saved." } }
+                update(id) {
+                    setBusy(false)
+                    lastWav = wav
+                    status.text = "Saved ${wav.name}"
+                    share(wav)
                 }
-            } catch (t: Throwable) {
-                Log.e(TAG, "saveAndShare failed", t)
-                CrashLog.record(appCtx, "saveAndShare", t)
-                activity?.runOnUiThread {
-                    saveBtn.isEnabled = true
-                    status.text = "Error: ${t.message ?: t.javaClass.simpleName}"
-                }
-            }
+            } catch (t: Throwable) { reportError(id, appCtx, "saveAndShare", t) }
         }.start()
     }
 
@@ -234,5 +270,21 @@ class SpeakFragment : Fragment() {
 
     private fun toast(s: String) = Toast.makeText(requireContext(), s, Toast.LENGTH_SHORT).show()
 
-    override fun onDestroyView() { player.stop(); super.onDestroyView() }
+    private fun interruptPlayback() {
+        synchronized(player) {
+            operation.incrementAndGet()
+            player.stop()
+        }
+        if (view != null && busy) {
+            setBusy(false)
+            status.text = "Interrupted when leaving the screen. Tap Speak to try again."
+        }
+    }
+
+    override fun onStop() { interruptPlayback(); super.onStop() }
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (hidden) interruptPlayback()
+    }
+    override fun onDestroyView() { interruptPlayback(); super.onDestroyView() }
 }

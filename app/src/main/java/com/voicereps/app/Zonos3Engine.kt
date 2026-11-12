@@ -56,6 +56,8 @@ object Zonos3Engine {
     fun engine(ctx: Context): Long {
         Zonos3.checkLoaded()
         if (engine == 0L) {
+            lastNativeError = ""
+            check(modelsReady(ctx)) { "Models are missing or incomplete. Reopen the app to finish downloading them." }
             val b = modelFile(ctx, BACKBONE)
             val d = modelFile(ctx, DECODER)
             val s = modelFile(ctx, STEER)
@@ -63,7 +65,12 @@ object Zonos3Engine {
             engine = Zonos3.nativeInit(b.absolutePath, d.absolutePath, s.absolutePath)
             val err = Zonos3.nativeLastError(engine)
             Log.i(TAG, "engine handle=$engine, native error='${err}'")
-            if (err.isNotEmpty()) lastNativeError = err
+            if (engine == 0L || err.isNotEmpty()) {
+                lastNativeError = err.ifEmpty { "engine failed to initialize" }
+                if (engine != 0L) Zonos3.nativeFree(engine)
+                engine = 0L // do not cache a nonzero native handle whose models failed to load
+                error(lastNativeError)
+            }
         }
         return engine
     }
@@ -83,7 +90,9 @@ object Zonos3Engine {
     fun lastError(handle: Long): String = try { Zonos3.nativeLastError(handle) } catch (t: Throwable) { "$t" }
 
     /** Synthesize text with a saved 192-d voice embedding (null = default voice). controls: "id=dose;..." steering ("" = none). */
+    @Synchronized
     fun synthesize(ctx: Context, text: String, embedding: FloatArray?, controls: String = ""): FloatArray? = try {
+        lastNativeError = ""
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
         val pcm = Zonos3.nativeSynthesize(h, text, seed(), 0, controls)
@@ -91,15 +100,22 @@ object Zonos3Engine {
         pcm
     } catch (t: Throwable) { fail("synthesize", t) }
 
+    @Synchronized
     fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, controls: String = "", listener: Zonos3.PcmListener): Boolean = try {
+        lastNativeError = ""
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
         val ok = Zonos3.nativeSynthesizeStreaming(h, text, seed(), 0, controls, listener)
         if (!ok) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "streaming synthesis failed" }
         ok
-    } catch (t: Throwable) { fail("synthesizeStreaming", t); false }
+    } catch (t: Throwable) {
+        fail("synthesizeStreaming", t)
+        false
+    }
 
+    @Synchronized
     fun synthesizeToWav(ctx: Context, text: String, embedding: FloatArray?, wav: File, controls: String = ""): Boolean = try {
+        lastNativeError = ""
         val h = engine(ctx)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
         val ok = Zonos3.nativeSynthesizeToFile(h, text, wav.absolutePath, seed(), 0, controls)
