@@ -4,3 +4,8 @@ build/
 local.properties
 *.iml
 .idea/
+
+# Local Android signing material must never be committed.
+*.jks
+*.keystore
+voice-reps-signing.properties

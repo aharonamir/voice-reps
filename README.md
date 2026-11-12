@@ -51,6 +51,34 @@ gradle assembleDebug    # or: ./gradlew assembleDebug
 
 produces `app/build/outputs/apk/debug/app-debug.apk`.
 
+### Signing (required for debug and release builds)
+
+Every build must use the same private signing key so Android accepts updates over an
+installed copy. Both `assembleDebug` and `assembleRelease` use one persistent PKCS#12
+keystore; Gradle deliberately fails rather than silently using a sandbox-specific debug key.
+Keep the keystore and its passwords outside the repository and provide them to the build
+process through these environment variables:
+
+- `VOICE_REPS_KEYSTORE_FILE`: path to the private `.p12` keystore file
+- `VOICE_REPS_STORE_PASSWORD`: keystore password
+- `VOICE_REPS_KEY_ALIAS`: signing-key alias
+- `VOICE_REPS_KEY_PASSWORD`: key password
+
+Example (set the values from the approved secure store, not shell history or a checked-in
+file):
+
+```bash
+export VOICE_REPS_KEYSTORE_FILE="$HOME/.config/voice-reps/signing.p12"
+export VOICE_REPS_STORE_PASSWORD="..."
+export VOICE_REPS_KEY_ALIAS="voice-reps"
+export VOICE_REPS_KEY_PASSWORD="..."
+./gradlew assembleDebug    # or assembleRelease
+```
+
+Do not put the keystore or passwords in Git, chat, build logs, or APK metadata. A new key
+cannot update APKs signed by a different key; users must uninstall those older builds first,
+which deletes the app's private model and voice-profile data.
+
 ### Rebuilding the native library from source (optional)
 
 ```bash

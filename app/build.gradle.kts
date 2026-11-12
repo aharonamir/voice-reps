@@ -3,6 +3,27 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// All distributable variants must use the same persistent signing identity. Never
+// fall back to Android's per-sandbox debug key: that breaks in-place updates.
+val signingEnv = System.getenv()
+val signingStoreFile = signingEnv["VOICE_REPS_KEYSTORE_FILE"]
+val signingStorePassword = signingEnv["VOICE_REPS_STORE_PASSWORD"]
+val signingKeyAlias = signingEnv["VOICE_REPS_KEY_ALIAS"]
+val signingKeyPassword = signingEnv["VOICE_REPS_KEY_PASSWORD"]
+val missingSigningValues = listOf(
+    "VOICE_REPS_KEYSTORE_FILE" to signingStoreFile,
+    "VOICE_REPS_STORE_PASSWORD" to signingStorePassword,
+    "VOICE_REPS_KEY_ALIAS" to signingKeyAlias,
+    "VOICE_REPS_KEY_PASSWORD" to signingKeyPassword,
+).filter { it.second.isNullOrBlank() }.map { it.first }
+
+if (missingSigningValues.isNotEmpty()) {
+    throw GradleException(
+        "Persistent voice-reps signing is not configured. Set the required environment " +
+            "variables: ${missingSigningValues.joinToString(", ")}. See README.md -> Signing."
+    )
+}
+
 android {
     namespace = "com.voicereps.app"
     compileSdk = 34
@@ -15,8 +36,20 @@ android {
         versionName = "0.1.2"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
+    signingConfigs {
+        create("persistent") {
+            storeFile = file(signingStoreFile!!)
+            storePassword = signingStorePassword!!
+            keyAlias = signingKeyAlias!!
+            keyPassword = signingKeyPassword!!
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("persistent")
+        }
         release {
+            signingConfig = signingConfigs.getByName("persistent")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
