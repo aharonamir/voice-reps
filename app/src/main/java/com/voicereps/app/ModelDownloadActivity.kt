@@ -22,13 +22,27 @@ class ModelDownloadActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
         setContentView(R.layout.activity_download)
+
+        CrashLog.read(this)?.let { log ->
+            android.app.AlertDialog.Builder(this)
+                .setTitle("voice-reps crashed")
+                .setMessage("If the app keeps crashing, share this log:\n$log")
+                .setPositiveButton("Dismiss & clear") { _, _ -> CrashLog.clear(this) }
+                .setNegativeButton("Keep", null)
+                .show()
+        }
         status = findViewById(R.id.download_status)
         detail = findViewById(R.id.download_detail)
         progress = findViewById(R.id.download_progress)
         action = findViewById(R.id.download_action)
 
         if (Zonos3Engine.modelsReady(this)) { enter(); return }
+
+        Zonos3Engine.nativeLoadError?.let {
+            detail.text = "Warning: the native engine failed to load on this device ($it). Voice features will not work."
+        }
 
         status.text = "Voice models needed"
         detail.text = "voice-reps runs entirely on your device. One-time download: ~1.2 GB of ZONOS3-Mini model files (Apache 2.0, from Zyphra on Hugging Face). Wi-Fi recommended."

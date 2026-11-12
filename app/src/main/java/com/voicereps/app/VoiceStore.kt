@@ -15,7 +15,10 @@ data class Voice(
     val source: String,        // "record" or "upload"
     val referenceWav: File,
     val embeddingBin: File,    // raw float32[192]
-)
+) {
+    /** True once the speaker embedding exists - the voice can be used in Speak. */
+    val ready: Boolean get() = embeddingBin.exists() && embeddingBin.length() == 192L * 4
+}
 
 /** JSON-indexed store of cloned voices under filesDir/voices/. */
 class VoiceStore(private val ctx: Context) {
@@ -34,28 +37,41 @@ class VoiceStore(private val ctx: Context) {
                 createdAt = o.getLong("createdAt"),
                 source = o.getString("source"),
                 referenceWav = File(dir, o.getString("wav")),
-                embeddingBin = File(dir, o.getString("emb")),
+                embeddingBin = File(dir, o.optString("emb")),
             )
-        }.filter { it.embeddingBin.exists() }
+        }.filter { it.referenceWav.exists() }
     }
 
-    fun add(name: String, source: String, referenceWav: File, embedding: FloatArray): Voice {
+    /**
+     * Persist the recording and index entry BEFORE the heavy embedding step,
+     * so a crash during embedding never loses the take. The voice shows as
+     * not-ready until [complete] writes the embedding.
+     */
+    @Synchronized
+    fun addPending(name: String, source: String, referenceWav: File): Voice {
         val id = "v" + System.currentTimeMillis().toString(36)
         val wavFile = File(dir, "$id.wav")
         referenceWav.copyTo(wavFile, overwrite = true)
-        val embFile = File(dir, "$id.emb")
-        embFile.writeBytes(embedding.toBytes())
-        val v = Voice(id, name, System.currentTimeMillis(), source, wavFile, embFile)
-        val all = listOf(v) + list()
-        save(all)
+        val v = Voice(id, name, System.currentTimeMillis(), source, wavFile, File(dir, "$id.emb"))
+        save(listOf(v) + list())
         return v
     }
 
+    /** Write the embedding for a pending voice, marking it ready. */
+    @Synchronized
+    fun complete(v: Voice, embedding: FloatArray) {
+        require(embedding.size == 192) { "embedding must be 192 floats, got ${embedding.size}" }
+        v.embeddingBin.writeBytes(embedding.toBytes())
+        save(list().map { if (it.id == v.id) Voice(it.id, it.name, it.createdAt, it.source, it.referenceWav, it.embeddingBin) else it })
+    }
+
+    @Synchronized
     fun rename(v: Voice, newName: String) {
         v.name = newName
         save(list())
     }
 
+    @Synchronized
     fun delete(v: Voice) {
         v.referenceWav.delete(); v.embeddingBin.delete()
         save(list().filter { it.id != v.id })
@@ -71,7 +87,9 @@ class VoiceStore(private val ctx: Context) {
         voices.forEach { v ->
             arr.put(JSONObject().apply {
                 put("id", v.id); put("name", v.name); put("createdAt", v.createdAt)
-                put("source", v.source); put("wav", v.referenceWav.name); put("emb", v.embeddingBin.name)
+                put("source", v.source); put("wav", v.referenceWav.name)
+                // emb is recomputed from the file on read; the name is stable.
+                put("emb", v.embeddingBin.name)
             })
         }
         index.writeText(arr.toString())

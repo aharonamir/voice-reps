@@ -2,6 +2,7 @@ package com.voicereps.app
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -17,6 +18,8 @@ import androidx.fragment.app.Fragment
 import java.io.File
 
 class SpeakFragment : Fragment() {
+
+    companion object { private const val TAG = "SpeakFragment" }
 
     private lateinit var store: VoiceStore
     private lateinit var spinner: Spinner
@@ -64,7 +67,7 @@ class SpeakFragment : Fragment() {
 
     fun refreshVoices() {
         if (!::store.isInitialized) return
-        voices = store.list()
+        voices = store.list().filter { it.ready }
         val labels = listOf("Default voice") + voices.map { it.name }
         spinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, labels)
         spinner.setSelection(selected.coerceAtMost(labels.size - 1))
@@ -78,37 +81,53 @@ class SpeakFragment : Fragment() {
         if (busy) return
         val text = input.text.toString().trim()
         if (text.isEmpty()) { toast("Type something to speak"); return }
+        Zonos3Engine.nativeLoadError?.let {
+            status.text = "Native engine failed to load: $it"
+            return
+        }
         busy = true
         speakBtn.isEnabled = false
         saveBtn.isEnabled = false
-        status.text = "Generating..."
+        status.text = "Loading engine (first run loads ~1.1 GB of models)..."
         val emb = if (selected > 0) store.embeddingOf(voices[selected - 1]) else null
+        val appCtx = requireContext().applicationContext
 
         Thread {
-            var firstChunkAt = 0L
-            val t0 = System.currentTimeMillis()
-            val track = player.beginStream()
-            val ok = Zonos3Engine.synthesizeStreaming(requireContext(), text, emb, object : com.zyphra.zonos3.Zonos3.PcmListener {
-                override fun onChunk(pcm: FloatArray) {
-                    if (firstChunkAt == 0L) {
-                        firstChunkAt = System.currentTimeMillis()
-                        val ms = firstChunkAt - t0
-                        activity?.runOnUiThread { status.text = "Speaking... (first audio in ${ms}ms)" }
+            try {
+                var firstChunkAt = 0L
+                val t0 = System.currentTimeMillis()
+                val track = player.beginStream()
+                val ok = Zonos3Engine.synthesizeStreaming(appCtx, text, emb, object : com.zyphra.zonos3.Zonos3.PcmListener {
+                    override fun onChunk(pcm: FloatArray) {
+                        if (firstChunkAt == 0L) {
+                            firstChunkAt = System.currentTimeMillis()
+                            val ms = firstChunkAt - t0
+                            activity?.runOnUiThread { status.text = "Speaking... (first audio in ${ms}ms)" }
+                        }
+                        track.write(pcm, 0, pcm.size, android.media.AudioTrack.WRITE_BLOCKING)
                     }
-                    track.write(pcm, 0, pcm.size, android.media.AudioTrack.WRITE_BLOCKING)
-                }
-            })
-            Thread.sleep(300) // let the last chunk drain
-            player.stop()
-            activity?.runOnUiThread {
-                busy = false
-                speakBtn.isEnabled = true
-                if (ok) {
-                    status.text = "Done. Save to share it as a WAV."
-                    // render once more to a file for sharing (keeps playback and export identical)
+                })
+                Thread.sleep(300) // let the last chunk drain
+                player.stop()
+                activity?.runOnUiThread {
+                    busy = false
+                    speakBtn.isEnabled = true
                     saveBtn.isEnabled = true
-                } else {
-                    status.text = "Generation failed: ${Zonos3Engine.lastError(0)}"
+                    if (ok) {
+                        status.text = "Done. Save to share it as a WAV."
+                    } else {
+                        status.text = "Generation failed: ${Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }}"
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "speak failed", t)
+                CrashLog.record(appCtx, "speak", t)
+                player.stop()
+                activity?.runOnUiThread {
+                    busy = false
+                    speakBtn.isEnabled = true
+                    saveBtn.isEnabled = true
+                    status.text = "Error: ${t.message ?: t.javaClass.simpleName}"
                 }
             }
         }.start()
@@ -120,16 +139,26 @@ class SpeakFragment : Fragment() {
         status.text = "Rendering WAV..."
         saveBtn.isEnabled = false
         val emb = if (selected > 0) store.embeddingOf(voices[selected - 1]) else null
+        val appCtx = requireContext().applicationContext
         Thread {
-            val wav = File(requireContext().cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
-            val ok = Zonos3Engine.synthesizeToWav(requireContext(), text, emb, wav)
-            activity?.runOnUiThread {
-                saveBtn.isEnabled = true
-                if (ok) {
-                    lastWav = wav
-                    status.text = "Saved ${wav.name}"
-                    share(wav)
-                } else status.text = "Render failed"
+            try {
+                val wav = File(appCtx.cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
+                val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav)
+                activity?.runOnUiThread {
+                    saveBtn.isEnabled = true
+                    if (ok) {
+                        lastWav = wav
+                        status.text = "Saved ${wav.name}"
+                        share(wav)
+                    } else status.text = "Render failed: ${Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }}"
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "saveAndShare failed", t)
+                CrashLog.record(appCtx, "saveAndShare", t)
+                activity?.runOnUiThread {
+                    saveBtn.isEnabled = true
+                    status.text = "Error: ${t.message ?: t.javaClass.simpleName}"
+                }
             }
         }.start()
     }

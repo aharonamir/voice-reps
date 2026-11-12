@@ -26,7 +26,9 @@ No account, no server, no audio leaves the device.
   (`ZONOS3_SERVER=OFF`, a one-option patch on top of upstream).
 - On first launch the app downloads three GGUF files (~1.2 GB total) from the public Hugging Face
   repo - no token required:
-  - `zonos3-ptq.gguf` (663 MB) - the backbone, Q4 experts / Q8 mixers (~100M active params/token)
+  - `backbone-ptq.gguf` (663 MB) - the backbone, Q4 experts / Q8 mixers (~100M active params/token)
+    (upstream renamed it from `zonos3-ptq.gguf` on 2026-11-11; 0.1.1 follows the new name and
+    migrates an already-downloaded local copy)
   - `zac-keep2.gguf` (452 MB) - the ZAC-1 waveform decoder (44.1 kHz)
   - `spk-encoder.gguf` (45 MB) - the MECT-B2 speaker encoder used to build voice profiles
 - Voice profiles are stored locally (`files/voices/`): the reference WAV + raw float32 embedding.
@@ -55,14 +57,31 @@ cd ZONOS3-Mini && git submodule update --init --depth 1 servers/ggml/ggml
 cmake -S native -B build-arm64 \
   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
-  -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod"
+  -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod" \
+  -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF
 cmake --build build-arm64 -j --target zonos3jni
+
+BUILD_SHARED_LIBS=OFF is required: it statically links ggml into libzonos3jni.so so the APK
+ships a single self-contained library that only needs Android system libs. (0.1.0 linked ggml
+dynamically and the APK was missing libggml*.so, so every native call crashed.)
+GGML_OPENMP=OFF avoids a runtime dependency on libomp.so, which Android does not provide.
 llvm-strip build-arm64/libzonos3jni.so -o app/src/main/jniLibs/arm64-v8a/libzonos3jni.so
 ```
 
 Device requirements: Android 9+ (API 28), arm64 with ARMv8.2 dot-product instructions
 (virtually every mid-range+ phone since ~2019), ~1.5 GB free storage, ~1.5 GB free RAM while
 generating.
+
+## Changelog
+
+- 0.1.1 (2026-11-12): crash fix - statically link ggml into libzonos3jni.so (0.1.0's APK was
+  missing libggml.so/libggml-cpu.so/libggml-base.so, so the first native call -
+  create voice or speak - killed the app); backbone download URL updated to the renamed
+  upstream file; voice recordings are persisted before the embedding step and can be finished
+  from the Voices tab after an interruption; native errors are surfaced as messages instead of
+  crashes; step-by-step logcat logging (tags Zonos3JNI/Zonos3Engine) and an on-device crash log
+  shown on next launch.
+- 0.1.0 (2026-11-11): first build.
 
 ## Verified / not verified
 

@@ -16,10 +16,28 @@
 #include "wav.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define ZLOGI(...) __android_log_print(ANDROID_LOG_INFO, "Zonos3JNI", __VA_ARGS__)
+#define ZLOGE(...) __android_log_print(ANDROID_LOG_ERROR, "Zonos3JNI", __VA_ARGS__)
+#else
+#define ZLOGI(...) do { fprintf(stderr, "zonos3jni: "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while (0)
+#define ZLOGE(...) ZLOGI(__VA_ARGS__)
+#endif
+
+static bool file_exists_with_size(const char * path, long & size_out) {
+    struct stat st;
+    if (!path || stat(path, &st) != 0) return false;
+    size_out = (long) st.st_size;
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -43,10 +61,19 @@ extern "C" {
 
 long zonos3_engine_init(const char * backbone_gguf, const char * decoder_gguf) {
     auto * e = new zonos3_engine();
+    long sz = 0;
+    if (!file_exists_with_size(backbone_gguf, sz)) {
+        set_err(e, "backbone model not found: " + std::string(backbone_gguf ? backbone_gguf : "(null)"));
+        ZLOGE("engine_init: %s", e->last_error.c_str());
+        return (long) e;
+    }
+    ZLOGI("engine_init: backbone %.1f MB, loading", sz / 1e6);
     if (!zonos3_model_load(e->model, backbone_gguf, /*use_gpu=*/false)) {
         set_err(e, "failed to load backbone: " + std::string(backbone_gguf));
+        ZLOGE("engine_init: %s", e->last_error.c_str());
         return (long) e; // handle stays valid so the caller can read the error
     }
+    ZLOGI("engine_init: backbone loaded");
     e->model_ok = true;
     if (decoder_gguf && decoder_gguf[0]) {
         if (!zac_load(e->decoder, decoder_gguf, false)) {
@@ -252,11 +279,19 @@ bool zonos3_engine_synthesize_stream(long handle, const char * text, uint32_t se
 // ---------------------------------------------------------------------------
 
 long zonos3_spk_encoder_init(const char * spk_encoder_gguf) {
+    long sz = 0;
+    if (!file_exists_with_size(spk_encoder_gguf, sz)) {
+        ZLOGE("spk_encoder_init: file not found: %s", spk_encoder_gguf ? spk_encoder_gguf : "(null)");
+        return 0;
+    }
+    ZLOGI("spk_encoder_init: %.1f MB, loading", sz / 1e6);
     auto * m = new spk_model();
     if (!spk_load(*m, spk_encoder_gguf, /*use_gpu=*/false)) {
+        ZLOGE("spk_encoder_init: spk_load failed");
         delete m;
         return 0;
     }
+    ZLOGI("spk_encoder_init: loaded");
     return (long) m;
 }
 
@@ -293,20 +328,40 @@ static std::string jstr(JNIEnv * env, jstring s) {
     return out;
 }
 
+// Convert any C++ exception escaping the engine into a Java IllegalStateException
+// instead of letting it terminate the process.
+template <typename F>
+static auto jni_guard(JNIEnv * env, F && f) -> decltype(f()) {
+    try {
+        return f();
+    } catch (const std::exception & ex) {
+        ZLOGE("native exception: %s", ex.what());
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), ex.what());
+    } catch (...) {
+        ZLOGE("unknown native exception");
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "unknown native error");
+    }
+    return decltype(f())();
+}
+
 extern "C" {
 
 JNIEXPORT jlong JNICALL Java_com_zyphra_zonos3_Zonos3_nativeInit(JNIEnv * env, jclass,
                                                                  jstring backbone, jstring decoder) {
-    std::string b = jstr(env, backbone), d = jstr(env, decoder);
-    return (jlong) zonos3_engine_init(b.c_str(), d.c_str());
+    return jni_guard(env, [&]() -> jlong {
+        std::string b = jstr(env, backbone), d = jstr(env, decoder);
+        return (jlong) zonos3_engine_init(b.c_str(), d.c_str());
+    });
 }
 
-JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeFree(JNIEnv *, jclass, jlong h) {
-    zonos3_engine_free(h);
+JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeFree(JNIEnv * env, jclass, jlong h) {
+    jni_guard(env, [&] { zonos3_engine_free(h); });
 }
 
 JNIEXPORT jstring JNICALL Java_com_zyphra_zonos3_Zonos3_nativeLastError(JNIEnv * env, jclass, jlong h) {
-    return env->NewStringUTF(zonos3_engine_last_error(h));
+    return jni_guard(env, [&]() -> jstring {
+        return env->NewStringUTF(zonos3_engine_last_error(h));
+    });
 }
 
 JNIEXPORT jint JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSampleRate(JNIEnv *, jclass) {
@@ -315,71 +370,86 @@ JNIEXPORT jint JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSampleRate(JNIEnv *, 
 
 JNIEXPORT jfloatArray JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesize(JNIEnv * env, jclass, jlong h,
                                                                              jstring text, jint seed, jint maxFrames) {
-    std::vector<float> pcm;
-    if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, pcm)) return nullptr;
-    jfloatArray out = env->NewFloatArray((jsize) pcm.size());
-    env->SetFloatArrayRegion(out, 0, (jsize) pcm.size(), pcm.data());
-    return out;
+    return jni_guard(env, [&]() -> jfloatArray {
+        std::vector<float> pcm;
+        if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, pcm)) return nullptr;
+        jfloatArray out = env->NewFloatArray((jsize) pcm.size());
+        env->SetFloatArrayRegion(out, 0, (jsize) pcm.size(), pcm.data());
+        return out;
+    });
 }
 
 JNIEXPORT jboolean JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesizeToFile(JNIEnv * env, jclass, jlong h,
                                                                                 jstring text, jstring path,
                                                                                 jint seed, jint maxFrames) {
-    std::vector<float> pcm;
-    if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, pcm)) return JNI_FALSE;
-    return wav_pcm16_write(jstr(env, path).c_str(), pcm, 44100) ? JNI_TRUE : JNI_FALSE;
+    return jni_guard(env, [&]() -> jboolean {
+        std::vector<float> pcm;
+        if (!zonos3_engine_synthesize(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames, pcm)) return JNI_FALSE;
+        return wav_pcm16_write(jstr(env, path).c_str(), pcm, 44100) ? JNI_TRUE : JNI_FALSE;
+    });
 }
 
 JNIEXPORT jboolean JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSynthesizeStreaming(JNIEnv * env, jclass, jlong h,
                                                                                    jstring text, jint seed,
                                                                                    jint maxFrames, jobject listener) {
-    jclass cls = env->GetObjectClass(listener);
-    jmethodID onChunk = env->GetMethodID(cls, "onChunk", "([F)V");
-    if (!onChunk) return JNI_FALSE;
-    bool ok = zonos3_engine_synthesize_stream(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames,
-        [&](const float * pcm, size_t n) -> bool {
-            jfloatArray arr = env->NewFloatArray((jsize) n);
-            env->SetFloatArrayRegion(arr, 0, (jsize) n, pcm);
-            env->CallVoidMethod(listener, onChunk, arr);
-            env->DeleteLocalRef(arr);
-            return !env->ExceptionCheck();
-        });
-    return ok ? JNI_TRUE : JNI_FALSE;
+    return jni_guard(env, [&]() -> jboolean {
+        jclass cls = env->GetObjectClass(listener);
+        jmethodID onChunk = env->GetMethodID(cls, "onChunk", "([F)V");
+        if (!onChunk) return JNI_FALSE;
+        bool ok = zonos3_engine_synthesize_stream(h, jstr(env, text).c_str(), (uint32_t) seed, maxFrames,
+            [&](const float * pcm, size_t n) -> bool {
+                jfloatArray arr = env->NewFloatArray((jsize) n);
+                env->SetFloatArrayRegion(arr, 0, (jsize) n, pcm);
+                env->CallVoidMethod(listener, onChunk, arr);
+                env->DeleteLocalRef(arr);
+                return !env->ExceptionCheck();
+            });
+        return ok ? JNI_TRUE : JNI_FALSE;
+    });
 }
 
 JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSetSpeakerEmbedding(JNIEnv * env, jclass, jlong h,
                                                                                jfloatArray emb) {
-    jsize n = env->GetArrayLength(emb);
-    std::vector<float> v(n);
-    env->GetFloatArrayRegion(emb, 0, n, v.data());
-    zonos3_engine_set_speaker_embedding(h, v.data(), n);
+    jni_guard(env, [&] {
+        jsize n = env->GetArrayLength(emb);
+        std::vector<float> v(n);
+        env->GetFloatArrayRegion(emb, 0, n, v.data());
+        zonos3_engine_set_speaker_embedding(h, v.data(), n);
+    });
 }
 
-JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeClearSpeaker(JNIEnv *, jclass, jlong h) {
-    zonos3_engine_clear_speaker(h);
+JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeClearSpeaker(JNIEnv * env, jclass, jlong h) {
+    jni_guard(env, [&] { zonos3_engine_clear_speaker(h); });
 }
 
 JNIEXPORT jlong JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSpkEncoderInit(JNIEnv * env, jclass, jstring path) {
-    return (jlong) zonos3_spk_encoder_init(jstr(env, path).c_str());
+    return jni_guard(env, [&]() -> jlong {
+        return (jlong) zonos3_spk_encoder_init(jstr(env, path).c_str());
+    });
 }
 
-JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSpkEncoderFree(JNIEnv *, jclass, jlong h) {
-    zonos3_spk_encoder_free(h);
+JNIEXPORT void JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSpkEncoderFree(JNIEnv * env, jclass, jlong h) {
+    jni_guard(env, [&] { zonos3_spk_encoder_free(h); });
 }
 
 JNIEXPORT jfloatArray JNICALL Java_com_zyphra_zonos3_Zonos3_nativeSpkEmbed(JNIEnv * env, jclass, jlong h,
                                                                            jfloatArray pcm, jint sampleRate) {
-    jsize n = env->GetArrayLength(pcm);
-    std::vector<float> v(n);
-    env->GetFloatArrayRegion(pcm, 0, n, v.data());
-    std::vector<float> emb;
-    if (!zonos3_spk_embed(h, v.data(), n, sampleRate, emb)) return nullptr;
-    jfloatArray out = env->NewFloatArray((jsize) emb.size());
-    env->SetFloatArrayRegion(out, 0, (jsize) emb.size(), emb.data());
-    return out;
+    return jni_guard(env, [&]() -> jfloatArray {
+        jsize n = env->GetArrayLength(pcm);
+        ZLOGI("nativeSpkEmbed: %d samples @ %d Hz", (int) n, (int) sampleRate);
+        std::vector<float> v(n);
+        env->GetFloatArrayRegion(pcm, 0, n, v.data());
+        std::vector<float> emb;
+        if (!zonos3_spk_embed(h, v.data(), n, sampleRate, emb)) return (jfloatArray) nullptr;
+        ZLOGI("nativeSpkEmbed: %zu-d embedding", emb.size());
+        jfloatArray out = env->NewFloatArray((jsize) emb.size());
+        env->SetFloatArrayRegion(out, 0, (jsize) emb.size(), emb.data());
+        return out;
+    });
 }
 
 } // extern "C" (JNI)
+
 
 #else // host test harness: same engine code, driven from argv
 

@@ -2,6 +2,7 @@ package com.voicereps.app
 
 import android.app.AlertDialog
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -14,6 +15,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 
 class VoicesFragment : Fragment() {
+
+    companion object { private const val TAG = "VoicesFragment" }
 
     private lateinit var store: VoiceStore
     private lateinit var adapter: VoiceAdapter
@@ -30,8 +33,12 @@ class VoicesFragment : Fragment() {
         rv.layoutManager = LinearLayoutManager(requireContext())
         adapter = VoiceAdapter(
             onPlay = { v ->
-                val pcm = AudioDecoder.decodeWavFile(v.referenceWav)
-                if (pcm != null) player.play(pcm) else toast("Cannot play reference")
+                if (v.ready) {
+                    val pcm = AudioDecoder.decodeWavFile(v.referenceWav)
+                    if (pcm != null) player.play(pcm) else toast("Cannot play reference")
+                } else {
+                    finishSetup(v)
+                }
             },
             onRename = { v -> promptRename(v) },
             onDelete = { v ->
@@ -43,6 +50,31 @@ class VoicesFragment : Fragment() {
             })
         rv.adapter = adapter
         refreshVoices()
+    }
+
+    /** Rebuild the embedding for a voice whose profile was interrupted (e.g. by a crash). */
+    private fun finishSetup(v: Voice) {
+        toast("Finishing \"${v.name}\"...")
+        val appCtx = requireContext().applicationContext
+        Thread {
+            try {
+                val pcm = AudioDecoder.decodeWavFile(v.referenceWav)
+                val emb = pcm?.let { Zonos3Engine.embedVoice(appCtx, it, Zonos3Engine.SAMPLE_RATE) }
+                activity?.runOnUiThread {
+                    if (emb != null) {
+                        store.complete(v, emb)
+                        toast("\"${v.name}\" is ready")
+                        refreshVoices()
+                    } else {
+                        toast("Still failing: ${Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }}")
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "finishSetup failed", t)
+                CrashLog.record(appCtx, "finishSetup", t)
+                activity?.runOnUiThread { toast("Error: ${t.message ?: t.javaClass.simpleName}") }
+            }
+        }.start()
     }
 
     fun refreshVoices() {
@@ -93,7 +125,10 @@ class VoicesFragment : Fragment() {
         override fun onBindViewHolder(h: Holder, pos: Int) {
             val v = items[pos]
             h.name.text = v.name
-            h.meta.text = "${if (v.source == "record") "Recorded" else "Uploaded"} · ${store.createdLabel(v)}"
+            h.meta.text = if (v.ready)
+                "${if (v.source == "record") "Recorded" else "Uploaded"} · ${store.createdLabel(v)}"
+            else
+                "Setup incomplete - tap play to finish"
             h.play.setOnClickListener { onPlay(v) }
             h.rename.setOnClickListener { onRename(v) }
             h.delete.setOnClickListener { onDelete(v) }

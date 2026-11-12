@@ -2,8 +2,10 @@ package com.voicereps.app
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +20,8 @@ import androidx.fragment.app.Fragment
 import java.io.File
 
 class RecordFragment : Fragment() {
+
+    companion object { private const val TAG = "RecordFragment" }
 
     private lateinit var store: VoiceStore
     private var recorder: AudioRecorder? = null
@@ -113,44 +117,71 @@ class RecordFragment : Fragment() {
 
     private fun buildVoiceFromUpload(uri: android.net.Uri) {
         status.text = "Decoding audio..."
+        val appCtx = requireContext().applicationContext
         Thread {
-            val pcm = AudioDecoder.decodeToFloat(requireContext(), uri)
-            if (pcm == null || pcm.size < 44100) {
-                activity?.runOnUiThread { status.text = "Could not decode that file (need at least 1s of audio)" }
-                return@Thread
-            }
-            // persist a wav copy for playback
-            val wav = File(requireContext().cacheDir, "upload_${System.currentTimeMillis()}.wav")
-            writeWav(wav, pcm)
-            activity?.runOnUiThread {
-                val input = EditText(requireContext()).apply { hint = "e.g. Amir, Mom, Narrator" }
-                AlertDialog.Builder(requireContext())
-                    .setTitle("Name this voice")
-                    .setView(input)
-                    .setPositiveButton("Create") { _, _ ->
-                        val name = input.text.toString().trim().ifEmpty { "Voice ${System.currentTimeMillis() % 1000}" }
-                        createVoice(name, wav, "upload")
-                    }
-                    .setNegativeButton("Cancel", null).show()
+            try {
+                val pcm = AudioDecoder.decodeToFloat(appCtx, uri)
+                if (pcm == null || pcm.size < 44100) {
+                    ui { status.text = "Could not decode that file (need at least 1s of audio)" }
+                    return@Thread
+                }
+                // persist a wav copy for playback
+                val wav = File(appCtx.cacheDir, "upload_${System.currentTimeMillis()}.wav")
+                writeWav(wav, pcm)
+                ui {
+                    val input = EditText(requireContext()).apply { hint = "e.g. Amir, Mom, Narrator" }
+                    AlertDialog.Builder(requireContext())
+                        .setTitle("Name this voice")
+                        .setView(input)
+                        .setPositiveButton("Create") { _, _ ->
+                            val name = input.text.toString().trim().ifEmpty { "Voice ${System.currentTimeMillis() % 1000}" }
+                            createVoice(name, wav, "upload")
+                        }
+                        .setNegativeButton("Cancel", null).show()
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "buildVoiceFromUpload failed", t)
+                CrashLog.record(appCtx, "buildVoiceFromUpload", t)
+                ui { status.text = "Error: ${t.message ?: t.javaClass.simpleName}" }
             }
         }.start()
     }
 
     private fun createVoice(name: String, wav: File, source: String) {
-        status.text = "Building voice profile for \"$name\"..."
+        Log.i(TAG, "createVoice '$name' from ${wav.name} (${wav.length()} bytes)")
         createBtn.isEnabled = false
+        status.text = "Saving recording..."
+        val appCtx = requireContext().applicationContext
         Thread {
-            val pcm = AudioDecoder.decodeWavFile(wav)
-            val emb = pcm?.let { Zonos3Engine.embedVoice(requireContext(), it, 44100) }
-            activity?.runOnUiThread {
-                if (emb == null) {
-                    status.text = "Failed to build the voice profile. Try a clearer recording."
+            try {
+                val pcm = AudioDecoder.decodeWavFile(wav)
+                if (pcm == null || pcm.size < 22050) {
+                    Log.e(TAG, "createVoice: wav unreadable or too short")
+                    ui { status.text = "Recording unreadable - please record again."; createBtn.isEnabled = true }
+                    return@Thread
+                }
+                // Persist the take BEFORE the heavy native step so a crash never loses it.
+                val v = store.addPending(name, source, wav)
+                Log.i(TAG, "createVoice: pending voice ${v.id} saved, building embedding")
+                ui { status.text = "Building voice profile for \"$name\" (can take a minute on first use)..." }
+                val emb = Zonos3Engine.embedVoice(appCtx, pcm, Zonos3Engine.SAMPLE_RATE)
+                ui {
                     createBtn.isEnabled = true
-                } else {
-                    store.add(name, source, wav, emb)
-                    status.text = "Voice \"$name\" is ready. Try it in the Speak tab."
+                    if (emb == null) {
+                        val why = Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }
+                        status.text = "\"$name\" was saved, but the profile failed: $why\nOpen the Voices tab and tap the voice to retry."
+                    } else {
+                        store.complete(v, emb)
+                        status.text = "Voice \"$name\" is ready. Try it in the Speak tab."
+                        toast("Voice \"$name\" created")
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "createVoice failed", t)
+                CrashLog.record(appCtx, "createVoice", t)
+                ui {
                     createBtn.isEnabled = true
-                    toast("Voice \"$name\" created")
+                    status.text = "Error creating voice: ${t.message ?: t.javaClass.simpleName}"
                 }
             }
         }.start()
@@ -175,6 +206,8 @@ class RecordFragment : Fragment() {
             raf.write(b)
         }
     }
+
+    private fun ui(f: () -> Unit) { activity?.runOnUiThread(f) }
 
     private fun toast(s: String) = Toast.makeText(requireContext(), s, Toast.LENGTH_SHORT).show()
 

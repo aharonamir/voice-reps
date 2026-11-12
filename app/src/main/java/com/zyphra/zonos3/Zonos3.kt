@@ -1,8 +1,29 @@
 package com.zyphra.zonos3
 
+import android.util.Log
+
 /** JNI bridge to the native ZONOS3-Mini ggml runtime (libzonos3jni.so). */
 object Zonos3 {
-    init { System.loadLibrary("zonos3jni") }
+    private const val TAG = "Zonos3"
+
+    /** Non-null when libzonos3jni failed to load; every native call will fail in that case. */
+    @Volatile var loadError: String? = null
+        private set
+
+    init {
+        try {
+            System.loadLibrary("zonos3jni")
+            Log.i(TAG, "libzonos3jni loaded")
+        } catch (t: Throwable) {
+            loadError = "${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, "libzonos3jni failed to load", t)
+        }
+    }
+
+    /** Throws UnsatisfiedLinkError with the real load failure when the native lib is missing. */
+    fun checkLoaded() {
+        loadError?.let { throw UnsatisfiedLinkError("native engine unavailable: $it") }
+    }
 
     interface PcmListener { fun onChunk(pcm: FloatArray) }
 
