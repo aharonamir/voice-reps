@@ -125,6 +125,11 @@ class SpeakFragment : Fragment() {
     fun refreshVoices() {
         if (!::store.isInitialized) return
         voices = store.list().filter { it.ready }
+        // Recover voices whose setup was interrupted since this picker last refreshed;
+        // when one becomes ready, refresh again so it appears.
+        VoiceSetup.finishPending(requireContext().applicationContext, onReady = {
+            if (isAdded) refreshVoices()
+        })
         val labels = listOf("Default voice") + voices.map { it.name }
         spinner.onItemSelectedListener = null
         spinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, labels)

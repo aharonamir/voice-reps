@@ -43,6 +43,13 @@ class MainActivity : AppCompatActivity() {
             }
             true
         }
+
+        // Finish any voice whose setup was interrupted last session (process killed
+        // mid-embedding), so it appears in the Speak picker without manual retry.
+        VoiceSetup.finishPending(applicationContext, onReady = {
+            (fm.findFragmentByTag("speak") as? SpeakFragment)?.refreshVoices()
+            (fm.findFragmentByTag("voices") as? VoicesFragment)?.refreshVoices()
+        })
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

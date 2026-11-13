@@ -49,7 +49,7 @@ class VoiceStore(private val ctx: Context) {
      */
     @Synchronized
     fun addPending(name: String, source: String, referenceWav: File): Voice {
-        val id = "v" + System.currentTimeMillis().toString(36)
+        val id = "v" + System.currentTimeMillis().toString(36) + "-" + java.util.UUID.randomUUID().toString().substring(0, 4)
         val wavFile = File(dir, "$id.wav")
         referenceWav.copyTo(wavFile, overwrite = true)
         val v = Voice(id, name, System.currentTimeMillis(), source, wavFile, File(dir, "$id.emb"))
