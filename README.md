@@ -14,7 +14,7 @@ No account, no server, no audio leaves the device.
   rename, replay (reference), or delete.
 - **Speak**: pick a voice, type text, hear it. 43 languages supported by the model, including
   Hebrew and English; the app detects Hebrew input automatically.
-- **Streaming playback** (audio starts as soon as the first frames decode) and **WAV export/share**.
+- **Streaming playback** (audio starts as soon as the first frames decode) and **MP3 export/share** (128 kbps, LAME 3.100 built into `libvoicerepsmp3.so` by `native/mp3/build_mp3.sh`).
 
 ## How it works
 
@@ -110,6 +110,7 @@ generating.
 
 ## Changelog
 
+- 0.3.0 (2026-11-15): "Save & share" now exports MP3 (on-device LAME 3.100 encoding) instead of WAV.
 - 0.2.2 (2026-11-15): Fix oversized bottom navigation while the keyboard is open.
   The activity now applies and consumes system-bar and keyboard insets once, so
   Material bottom navigation cannot apply the keyboard height as padding again.

@@ -32,8 +32,8 @@ android {
         applicationId = "com.voicereps.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.2.2"
+        versionCode = 10
+        versionName = "0.3.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {

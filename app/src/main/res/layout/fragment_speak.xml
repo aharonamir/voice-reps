@@ -82,7 +82,7 @@
         <Button android:id="@+id/speak_button" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:text="Speak" android:layout_marginEnd="12dp" />
         <Button android:id="@+id/save_button" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Save &amp; share WAV"
+            android:layout_height="wrap_content" android:text="Save &amp; share MP3"
             android:backgroundTint="@color/accent_dim" android:enabled="false" />
     </LinearLayout>
 

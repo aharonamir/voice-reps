@@ -272,34 +272,38 @@ class SpeakFragment : Fragment() {
         val controls = controlsString()
         rememberGeneration(text, controls)
         setBusy(true)
-        status.text = "Rendering WAV. Please keep the app open..."
+        status.text = "Rendering MP3. Please keep the app open..."
         Thread {
             try {
                 val wav = File(appCtx.cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
                 val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav, controls)
                 check(ok && wav.length() > 44) { Zonos3Engine.lastNativeError.ifEmpty { "No audio was saved." } }
+                val mp3 = File(appCtx.cacheDir, wav.nameWithoutExtension + ".mp3")
+                val encoded = Mp3Encoder.wavToMp3(wav, mp3)
+                wav.delete()
+                check(encoded && mp3.length() > 0) { "MP3 encoding failed." }
                 update(id) {
                     setBusy(false)
-                    lastWav = wav
-                    status.text = "Saved ${wav.name}"
-                    share(wav)
+                    lastWav = mp3
+                    status.text = "Saved ${mp3.name}"
+                    share(mp3)
                 }
             } catch (t: Throwable) { reportError(id, appCtx, "saveAndShare", t) }
         }.start()
     }
 
-    private fun share(wav: File) {
+    private fun share(clip: File) {
         try {
             val uri = FileProvider.getUriForFile(requireContext(),
-                requireContext().packageName + ".files", wav)
+                requireContext().packageName + ".files", clip)
             val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "audio/wav"
+                type = "audio/mpeg"
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             startActivity(Intent.createChooser(intent, "Share voice clip"))
         } catch (e: Exception) {
-            toast("File saved: ${wav.absolutePath}")
+            toast("File saved: ${clip.absolutePath}")
         }
     }
 
