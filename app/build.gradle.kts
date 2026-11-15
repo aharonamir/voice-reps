@@ -26,14 +26,14 @@ if (missingSigningValues.isNotEmpty()) {
 
 android {
     namespace = "com.voicereps.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.voicereps.app"
         minSdk = 28
-        targetSdk = 34
-        versionCode = 6
-        versionName = "0.1.5"
+        targetSdk = 36
+        versionCode = 7
+        versionName = "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {

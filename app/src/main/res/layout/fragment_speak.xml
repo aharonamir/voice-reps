@@ -85,4 +85,9 @@
     <TextView android:id="@+id/speak_status" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:layout_gravity="center" android:gravity="center"
         android:textColor="@color/text_secondary" android:layout_marginTop="12dp" android:textSize="14sp" />
+
+    <Button android:id="@+id/report_button" style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_gravity="center" android:text="@string/report_audio"
+        android:textColor="@color/text_secondary" android:textSize="13sp" />
 </LinearLayout>

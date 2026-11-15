@@ -37,6 +37,9 @@ class SpeakFragment : Fragment() {
     private var voices: List<Voice> = emptyList()
     private var selected: Int = 0 // 0 = default voice
     private var lastWav: File? = null
+    private var lastSpokenText: String? = null
+    private var lastVoiceName: String? = null
+    private var lastControls: String = ""
     @Volatile private var busy = false
     private val operation = AtomicInteger()
     private val prefs by lazy { requireContext().getSharedPreferences("speak", 0) }
@@ -63,6 +66,7 @@ class SpeakFragment : Fragment() {
 
         speakBtn.setOnClickListener { speak() }
         saveBtn.setOnClickListener { saveAndShare() }
+        view.findViewById<Button>(R.id.report_button).setOnClickListener { reportAudio() }
 
         val chips: ChipGroup = view.findViewById(R.id.emotion_chips)
         chips.setOnCheckedStateChangeListener { group, ids ->
@@ -192,6 +196,7 @@ class SpeakFragment : Fragment() {
         val emb = try { embedding() } catch (t: Throwable) {
             reportError(id, appCtx, "load saved voice", t); return
         }
+        rememberGeneration(text, controls)
         Thread {
             var stream: AudioPlayer.Stream? = null
             try {
@@ -265,6 +270,7 @@ class SpeakFragment : Fragment() {
             reportError(id, appCtx, "load saved voice", t); return
         }
         val controls = controlsString()
+        rememberGeneration(text, controls)
         setBusy(true)
         status.text = "Rendering WAV. Please keep the app open..."
         Thread {
@@ -294,6 +300,43 @@ class SpeakFragment : Fragment() {
             startActivity(Intent.createChooser(intent, "Share voice clip"))
         } catch (e: Exception) {
             toast("File saved: ${wav.absolutePath}")
+        }
+    }
+
+    private fun rememberGeneration(text: String, controls: String) {
+        lastSpokenText = text
+        lastControls = controls
+        lastVoiceName = if (selected == 0) "default" else voices.getOrNull(selected - 1)?.name
+    }
+
+    /** In-app report for offensive generated audio: opens the user's mail app with context prefilled. */
+    private fun reportAudio() {
+        val ctx = requireContext()
+        val versionName = try {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
+        } catch (_: Exception) { "unknown" }
+        val body = buildString {
+            appendLine("Please describe what was offensive or harmful about the generated audio:")
+            appendLine()
+            appendLine()
+            appendLine("--- Details (added by voice-reps, edit or remove as you like) ---")
+            appendLine("App: voice-reps $versionName")
+            appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}), ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            appendLine("Voice: ${lastVoiceName ?: "none generated yet"}")
+            appendLine("Controls: ${lastControls.ifEmpty { "none" }}")
+            appendLine("Text that was spoken: ${lastSpokenText ?: "none generated yet"}")
+            CrashLog.read(ctx)?.let { appendLine(); appendLine("Error log:"); appendLine(it) }
+        }
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+            data = android.net.Uri.parse("mailto:")
+            putExtra(Intent.EXTRA_EMAIL, arrayOf(getString(R.string.report_email)))
+            putExtra(Intent.EXTRA_SUBJECT, "voice-reps report: generated audio")
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        try {
+            startActivity(Intent.createChooser(intent, getString(R.string.report_audio)))
+        } catch (e: Exception) {
+            toast("No email app found. Please write to ${getString(R.string.report_email)}")
         }
     }
 

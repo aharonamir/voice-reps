@@ -14,6 +14,8 @@ target_link_libraries(zonos3jni PRIVATE zonos3 zonos3-audio)
 target_include_directories(zonos3jni PRIVATE ${ZONOS3_GGML}/src)
 if (ANDROID)
     target_link_libraries(zonos3jni PRIVATE log)
+    # Google Play requires 16 KB page-size compatibility (Android 15+ devices).
+    target_link_options(zonos3jni PRIVATE -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384)
 endif()
 
 if (NOT ANDROID)

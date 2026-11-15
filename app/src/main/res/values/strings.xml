@@ -5,4 +5,6 @@
     <string name="tab_record">New voice</string>
     <string name="tab_speak">Speak</string>
     <string name="disclaimer">Voice cloning requires the recorded person\'s explicit consent. Only record or upload audio of people who agreed to have their voice replicated. You are responsible for how generated audio is used.</string>
+    <string name="report_audio">Report offensive or harmful audio</string>
+    <string name="report_email">aharon.amir8work@gmail.com</string>
 </resources>

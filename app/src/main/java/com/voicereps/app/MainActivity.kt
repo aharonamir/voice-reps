@@ -10,6 +10,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
         setContentView(R.layout.activity_main)
+        applyEdgeToEdge(findViewById(R.id.main_root), includeBottomBars = false)
 
         // FragmentManager restores the existing screens in super.onCreate(). Adding a
         // second set here leaves overlapping views and independent playback state.

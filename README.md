@@ -93,7 +93,8 @@ cmake -S native -B build-arm64 \
   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
   -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod" \
-  -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF
+  -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF \
+  -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON   # 16 KB page alignment (Play requirement)
 cmake --build build-arm64 -j --target zonos3jni
 
 BUILD_SHARED_LIBS=OFF is required: it statically links ggml into libzonos3jni.so so the APK
@@ -109,6 +110,11 @@ generating.
 
 ## Changelog
 
+- 0.2.0 (2026-11-15): Google Play readiness, no feature changes. targetSdk/compileSdk 36
+  (AGP 8.10.1, Gradle 8.11.1) with edge-to-edge insets handling; libzonos3jni.so rebuilt
+  with NDK r27c and 16 KB page alignment (`-Wl,-z,max-page-size=16384`); new "Report
+  offensive or harmful audio" action on the Speak tab (opens an email to the developer
+  with app/device/voice/text context and the error log); release `.aab` for Play upload.
 - 0.1.3 (2026-11-12): reuse restored fragments after Android recreates the activity,
   instead of stacking duplicate Speak screens. Remember the chosen saved voice. A new
   playback session is opened only once audio is ready, requests media audio focus, checks
