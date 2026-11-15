@@ -110,6 +110,11 @@ generating.
 
 ## Changelog
 
+- 0.2.2 (2026-11-15): Fix oversized bottom navigation while the keyboard is open.
+  The activity now applies and consumes system-bar and keyboard insets once, so
+  Material bottom navigation cannot apply the keyboard height as padding again.
+  Regression tests dispatch actual legacy and modern window insets, check navigation
+  height through keyboard open/close cycles, and scroll/edit the text field.
 - 0.2.1 (2026-11-15): fix Speak tab on Android 15+/API 36: the screen now scrolls and the text
   box keeps a usable height while the keyboard is open (it collapsed to zero with edge-to-edge).
 - 0.2.0 (2026-11-15): Google Play readiness, no feature changes. targetSdk/compileSdk 36

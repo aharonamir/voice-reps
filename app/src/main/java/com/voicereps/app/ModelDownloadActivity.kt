@@ -24,7 +24,7 @@ class ModelDownloadActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
         setContentView(R.layout.activity_download)
-        applyEdgeToEdge(findViewById(R.id.download_root), includeBottomBars = true)
+        applyEdgeToEdge(findViewById(R.id.download_root))
 
         CrashLog.read(this)?.let { log ->
             android.app.AlertDialog.Builder(this)
