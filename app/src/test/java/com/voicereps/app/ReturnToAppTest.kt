@@ -46,6 +46,35 @@ class ReturnToAppTest {
         controller.pause().stop().destroy()
     }
 
+    @Test fun speakScreenStaysUsableWithKeyboardOpen() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val activity = controller.get()
+        activity.findViewById<BottomNavigationView>(R.id.bottom_nav).selectedItemId = R.id.nav_speak
+        activity.supportFragmentManager.executePendingTransactions()
+        val input = activity.findViewById<EditText>(R.id.speak_input)
+        input.setText("Hello keyboard")
+        val w = 786; val h = 1600; val kb = 640
+        fun render(name: String, imeBottom: Int) {
+            val rootView = activity.findViewById<View>(R.id.main_root)
+            // Same padding EdgeToEdge.kt applies from the IME inset (dispatching real IME insets is not supported by Robolectric on API 28).
+            rootView.setPadding(0, 72, 0, imeBottom)
+            rootView.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+            rootView.layout(0, 0, w, h)
+            rootView.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+            rootView.layout(0, 0, w, h)
+            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            rootView.draw(Canvas(bitmap))
+            File("/downloads").mkdirs()
+            File("/downloads/$name").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        render("voice-reps-0.2.1-keyboard-closed.png", 0)
+        assertTrue("input is tall enough with keyboard closed", input.height >= 100)
+        render("voice-reps-0.2.1-keyboard-open.png", kb)
+        // With the keyboard open the field must keep a usable height (the screen scrolls instead).
+        assertTrue("input height with keyboard open = ${input.height}", input.height >= 100)
+        controller.pause().stop().destroy()
+    }
+
     @Test fun playbackErrorIsVisibleAndLogged() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         val a = controller.get()

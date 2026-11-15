@@ -110,6 +110,8 @@ generating.
 
 ## Changelog
 
+- 0.2.1 (2026-11-15): fix Speak tab on Android 15+/API 36: the screen now scrolls and the text
+  box keeps a usable height while the keyboard is open (it collapsed to zero with edge-to-edge).
 - 0.2.0 (2026-11-15): Google Play readiness, no feature changes. targetSdk/compileSdk 36
   (AGP 8.10.1, Gradle 8.11.1) with edge-to-edge insets handling; libzonos3jni.so rebuilt
   with NDK r27c and 16 KB page alignment (`-Wl,-z,max-page-size=16384`); new "Report
