@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.Button
 import android.widget.EditText
 import android.widget.SeekBar
@@ -33,6 +34,12 @@ class SpeakFragment : Fragment() {
     private lateinit var saveBtn: Button
     private lateinit var status: TextView
     private val player = AudioPlayer()
+    private lateinit var autoEmotions: CheckBox
+    private lateinit var autoStatus: TextView
+    private lateinit var pauseBtn: Button
+    private lateinit var stopBtn: Button
+    private var paused = false
+    private var autoResult: String? = null
 
     private var voices: List<Voice> = emptyList()
     private var selected: Int = 0 // 0 = default voice
@@ -41,6 +48,7 @@ class SpeakFragment : Fragment() {
     private var lastVoiceName: String? = null
     private var lastControls: String = ""
     @Volatile private var busy = false
+    @Volatile private var runningId = 0
     private val operation = AtomicInteger()
     private val prefs by lazy { requireContext().getSharedPreferences("speak", 0) }
 
@@ -55,7 +63,7 @@ class SpeakFragment : Fragment() {
         inflater.inflate(R.layout.fragment_speak, container, false)
 
     override fun onViewCreated(view: View, saved: Bundle?) {
-        busy = false
+        busy = runningId != 0
         store = VoiceStore(requireContext())
         spinner = view.findViewById(R.id.voice_spinner)
         input = view.findViewById(R.id.speak_input)
@@ -64,6 +72,25 @@ class SpeakFragment : Fragment() {
         saveBtn = view.findViewById(R.id.save_button)
         status = view.findViewById(R.id.speak_status)
 
+        autoEmotions = view.findViewById(R.id.auto_emotions)
+        autoStatus = view.findViewById(R.id.auto_emotion_status)
+        pauseBtn = view.findViewById(R.id.pause_button)
+        stopBtn = view.findViewById(R.id.stop_button)
+        pauseBtn.setOnClickListener {
+            paused = !paused
+            if (paused) player.pause() else player.resume()
+            pauseBtn.text = if (paused) "Resume" else "Pause"
+            status.text = if (paused) "Paused. Resume or stop playback." else "Speaking..."
+        }
+        stopBtn.setOnClickListener {
+            operation.incrementAndGet()
+            player.stop()
+            paused = false
+            pauseBtn.isEnabled = false
+            stopBtn.isEnabled = false
+            status.text = "Stopped. Finishing current background step..."
+            // Keep Speak disabled until the worker exits, avoiding overlapping model loads.
+        }
         speakBtn.setOnClickListener { speak() }
         saveBtn.setOnClickListener { saveAndShare() }
         view.findViewById<Button>(R.id.report_button).setOnClickListener { reportAudio() }
@@ -77,10 +104,20 @@ class SpeakFragment : Fragment() {
         bindSlider(view, R.id.expression_bar, R.id.expression_val, 8, 24) { expressive = it }
         bindSlider(view, R.id.pace_bar, R.id.pace_val, 4, 8) { pace = it }
 
+        autoEmotions.isChecked = prefs.getBoolean("auto_emotions", false)
+        autoEmotions.setOnCheckedChangeListener { _, checked ->
+            autoResult = null
+            prefs.edit().putBoolean("auto_emotions", checked).apply()
+            updateManualControls()
+        }
+        updateManualControls()
+
         input.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: android.text.Editable?) {
+                autoResult = null
+                if (!busy) updateManualControls()
                 val t = s?.toString() ?: ""
                 langHint.text = when {
                     t.any { it in '\u0590'..'\u05FF' } -> "Hebrew detected"
@@ -90,6 +127,7 @@ class SpeakFragment : Fragment() {
             }
         })
         refreshVoices()
+        setBusy(busy)
     }
 
     /** SeekBar of half steps centered at `zero` (value = (progress - zero) * 0.5). */
@@ -110,9 +148,9 @@ class SpeakFragment : Fragment() {
         })
     }
 
-    private fun controlsString(): String {
+    private fun controlsString(preset: String = emotion, manual: Boolean = true): String {
         val m = linkedMapOf<String, Double>()
-        when (emotion) {
+        when (preset) {
             "Happy" -> m["emotions.happy"] = 2.0
             "Sad" -> m["emotions.sad"] = 4.0
             "Angry" -> m["emotions.angry"] = 2.0
@@ -120,10 +158,39 @@ class SpeakFragment : Fragment() {
             "Excited" -> { m["emotions.ecstatic"] = 2.0; m["mood.arousal"] = 1.0 }
             "Whisper" -> m["delivery.whisper"] = 1.5
         }
-        if (pitch != 0.0) m["delivery.pitch"] = pitch
-        if (expressive != 0.0) m["expressive.expressive"] = expressive
-        if (pace != 0.0) m["delivery.tempo"] = pace
+        if (manual && pitch != 0.0) m["delivery.pitch"] = pitch
+        if (manual && expressive != 0.0) m["expressive.expressive"] = expressive
+        if (manual && pace != 0.0) m["delivery.tempo"] = pace
         return m.entries.joinToString(";") { "${it.key}=${it.value}" }
+    }
+
+    private fun updateManualControls() {
+        val root = view ?: return
+        val enabled = !autoEmotions.isChecked && !busy
+        val chips = root.findViewById<ChipGroup>(R.id.emotion_chips)
+        for (i in 0 until chips.childCount) chips.getChildAt(i).isEnabled = enabled
+        listOf(R.id.pitch_bar, R.id.expression_bar, R.id.pace_bar).forEach {
+            root.findViewById<SeekBar>(it).apply { isEnabled = enabled; alpha = if (enabled) 1f else 0.4f }
+        }
+        autoStatus.visibility = if (autoEmotions.isChecked) View.VISIBLE else View.GONE
+        if (autoEmotions.isChecked && !busy) autoStatus.text = autoResult ?: if (EmotionModel.ready(requireContext()))
+            "On-device detection. One emotion for the whole text; turn off to set it manually."
+        else "First use downloads 268 MB on Speak or MP3 export. Wi-Fi recommended. Text stays on device."
+    }
+
+    private fun resolveControls(id: Int, ctx: android.content.Context, text: String, auto: Boolean, manual: String): String {
+        if (!auto) return manual
+        Zonos3Engine.releaseSynthesisEngine()
+        val choice = EmotionModel.classify(ctx, text, { operation.get() == id }) { message ->
+            update(id) { status.text = message }
+        }
+        update(id) {
+            autoResult = "Detected: ${choice.label} → ${choice.preset}" +
+                (if (choice.preset == "Neutral" && choice.label != "neutral") " (uncertain or no matching preset)" else "") +
+                if (choice.windows > 1) " (whole-text summary, ${choice.windows} sections)" else ""
+            autoStatus.text = autoResult
+        }
+        return controlsString(choice.preset, manual = false)
     }
 
     fun refreshVoices() {
@@ -168,6 +235,22 @@ class SpeakFragment : Fragment() {
         speakBtn.isEnabled = !value
         saveBtn.isEnabled = !value
         spinner.isEnabled = !value
+        input.isEnabled = !value
+        autoEmotions.isEnabled = !value
+        view?.findViewById<View>(R.id.playback_controls)?.visibility = if (value) View.VISIBLE else View.GONE
+        if (!value) { paused = false; pauseBtn.text = "Pause"; pauseBtn.isEnabled = false }
+        stopBtn.isEnabled = value
+        if (value) {
+            pauseBtn.isEnabled = false
+            pauseBtn.text = "Pause"
+            autoResult = null
+            view?.post {
+                if (busy) view?.findViewById<View>(R.id.playback_controls)?.let {
+                    it.requestRectangleOnScreen(android.graphics.Rect(0, 0, it.width, it.height), true)
+                }
+            }
+        }
+        updateManualControls()
     }
 
     private fun reportError(id: Int, appCtx: android.content.Context, where: String, t: Throwable) {
@@ -192,14 +275,18 @@ class SpeakFragment : Fragment() {
         val appCtx = requireContext().applicationContext
         setBusy(true)
         status.text = "Loading engine. Please keep the app open..."
-        val controls = controlsString()
+        val manual = controlsString()
+        val auto = autoEmotions.isChecked
         val emb = try { embedding() } catch (t: Throwable) {
             reportError(id, appCtx, "load saved voice", t); return
         }
-        rememberGeneration(text, controls)
+        runningId = id
         Thread {
             var stream: AudioPlayer.Stream? = null
             try {
+                val controls = resolveControls(id, appCtx, text, auto, manual)
+                check(operation.get() == id) { "Stopped" }
+                update(id) { rememberGeneration(text, controls); status.text = "Loading voice engine..." }
                 val t0 = System.currentTimeMillis()
                 // Strong expression steering can occasionally make the engine render a silent clip.
                 // Retry with a new seed and gentler steering before telling the user it failed.
@@ -222,7 +309,7 @@ class SpeakFragment : Fragment() {
                                     if (stream == null) {
                                         stream = player.beginStream(appCtx)
                                         val ms = System.currentTimeMillis() - t0
-                                        update(id) { status.text = "Speaking... (first audio in ${ms}ms)" }
+                                        update(id) { pauseBtn.isEnabled = true; status.text = "Speaking... (first audio in ${ms}ms)" }
                                     }
                                 }
                                 player.writeStream(stream!!, pcm)
@@ -249,6 +336,7 @@ class SpeakFragment : Fragment() {
             } finally {
                 // Only stop our own track, never a newer retry's stream.
                 stream?.let { player.cancelStream(it) }
+                finishCancelled(id)
             }
         }.start()
     }
@@ -269,14 +357,19 @@ class SpeakFragment : Fragment() {
         val emb = try { embedding() } catch (t: Throwable) {
             reportError(id, appCtx, "load saved voice", t); return
         }
-        val controls = controlsString()
-        rememberGeneration(text, controls)
+        val manual = controlsString()
+        val auto = autoEmotions.isChecked
         setBusy(true)
         status.text = "Rendering MP3. Please keep the app open..."
+        runningId = id
         Thread {
             try {
+                val controls = resolveControls(id, appCtx, text, auto, manual)
+                check(operation.get() == id) { "Stopped" }
+                update(id) { rememberGeneration(text, controls); status.text = "Rendering MP3..." }
                 val wav = File(appCtx.cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
                 val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav, controls)
+                check(operation.get() == id) { wav.delete(); "Stopped" }
                 check(ok && wav.length() > 44) { Zonos3Engine.lastNativeError.ifEmpty { "No audio was saved." } }
                 val mp3 = File(appCtx.cacheDir, wav.nameWithoutExtension + ".mp3")
                 val encoded = Mp3Encoder.wavToMp3(wav, mp3)
@@ -289,6 +382,7 @@ class SpeakFragment : Fragment() {
                     share(mp3)
                 }
             } catch (t: Throwable) { reportError(id, appCtx, "saveAndShare", t) }
+            finally { finishCancelled(id) }
         }.start()
     }
 
@@ -346,14 +440,25 @@ class SpeakFragment : Fragment() {
 
     private fun toast(s: String) = Toast.makeText(requireContext(), s, Toast.LENGTH_SHORT).show()
 
+    private fun finishCancelled(id: Int) {
+        if (runningId == id) runningId = 0
+        activity?.runOnUiThread {
+            if (operation.get() != id && view != null && runningId == 0) {
+                setBusy(false)
+                status.text = "Stopped."
+            }
+        }
+    }
+
     private fun interruptPlayback() {
         synchronized(player) {
             operation.incrementAndGet()
             player.stop()
         }
         if (view != null && busy) {
-            setBusy(false)
-            status.text = "Interrupted when leaving the screen. Tap Speak to try again."
+            pauseBtn.isEnabled = false
+            stopBtn.isEnabled = false
+            status.text = "Stopped when leaving the screen. Finishing current background step..."
         }
     }
 

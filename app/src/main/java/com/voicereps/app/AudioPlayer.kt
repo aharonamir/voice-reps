@@ -23,6 +23,7 @@ class AudioPlayer {
         internal val focus: AudioFocusRequest?,
     ) {
         @Volatile internal var closed = false
+        @Volatile internal var paused = false
         internal var written = 0L
         internal val stats = PcmStats()
     }
@@ -66,9 +67,17 @@ class AudioPlayer {
         check(!s.closed && stream === s) { "Playback was interrupted. Try Speak again." }
         s.stats.add(pcm)
         var offset = 0
+        var deadline = SystemClock.elapsedRealtime() + 30000
         while (offset < pcm.size) {
             check(!s.closed) { "Playback was interrupted. Try Speak again." }
-            val n = s.track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
+            if (s.paused) { deadline = SystemClock.elapsedRealtime() + 30000; Thread.sleep(20); continue }
+            // Short nonblocking writes let stop release safely without a blocked native write.
+            val n = synchronized(s) {
+                check(!s.closed) { "Playback interrupted" }
+                s.track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_NON_BLOCKING)
+            }
+            if (n == 0) { check(SystemClock.elapsedRealtime() < deadline) { "Android audio playback stalled." }; Thread.sleep(10); continue }
+            deadline = SystemClock.elapsedRealtime() + 30000
             check(n > 0) { "Android audio write failed ($n). Try Speak again." }
             offset += n
             s.written += n
@@ -79,11 +88,18 @@ class AudioPlayer {
     fun finishStream(s: Stream, timeoutMs: Long = 30000) {
         try {
             s.stats.requireAudible()
-            val deadline = SystemClock.elapsedRealtime() + timeoutMs
+            var deadline = SystemClock.elapsedRealtime() + timeoutMs
+            var previous = -1L
             while (true) {
                 check(!s.closed) { "Playback was interrupted. Try Speak again." }
-                val played = s.track.playbackHeadPosition.toLong() and 0xffffffffL
+                if (s.paused) { deadline = SystemClock.elapsedRealtime() + timeoutMs; Thread.sleep(25); continue }
+                val played = synchronized(s) {
+                    check(!s.closed) { "Playback interrupted" }
+                    s.track.playbackHeadPosition.toLong() and 0xffffffffL
+                }
+                if (played != previous) { deadline = SystemClock.elapsedRealtime() + timeoutMs; previous = played }
                 if (played >= s.written) break
+                if (s.paused) continue
                 check(s.track.playState == AudioTrack.PLAYSTATE_PLAYING) { "Android stopped audio playback. Try Speak again." }
                 check(SystemClock.elapsedRealtime() < deadline) { "Android audio playback stalled. Try Speak again." }
                 Thread.sleep(25)
@@ -115,6 +131,13 @@ class AudioPlayer {
             if (stream === s) { stream = null; playing = false }
         }
     }
+
+    fun pause() { stream?.let { s -> synchronized(s) {
+        if (!s.closed) { s.paused = true; s.track.pause(); playing = false }
+    } } }
+    fun resume() { stream?.let { s -> synchronized(s) {
+        if (!s.closed) { s.track.play(); s.paused = false; playing = true }
+    } } }
 
     fun cancelStream(s: Stream) { close(s) }
     fun stop() { stream?.let { close(it) } }

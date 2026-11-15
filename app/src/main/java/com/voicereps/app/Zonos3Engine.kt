@@ -52,6 +52,11 @@ object Zonos3Engine {
     @Volatile private var engine: Long = 0
     @Volatile private var spkEncoder: Long = 0
 
+    /** Avoid keeping TTS weights resident while the separate emotion engine runs. */
+    @Synchronized fun releaseSynthesisEngine() {
+        if (engine != 0L) { Zonos3.nativeFree(engine); engine = 0L }
+    }
+
     @Synchronized
     fun engine(ctx: Context): Long {
         Zonos3.checkLoaded()

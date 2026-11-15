@@ -13,6 +13,12 @@
     <Spinner android:id="@+id/voice_spinner" android:layout_width="match_parent"
         android:layout_height="wrap_content" android:layout_marginBottom="8dp" />
 
+    <CheckBox android:id="@+id/auto_emotions" android:layout_width="wrap_content"
+        android:layout_height="48dp" android:text="Auto emotions" android:textColor="@color/text_primary" />
+    <TextView android:id="@+id/auto_emotion_status" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:textSize="12sp" android:textColor="@color/text_secondary"
+        android:visibility="gone" android:layout_marginBottom="4dp" />
+
     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:text="Emotion" android:textColor="@color/text_secondary" android:textSize="13sp" />
     <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
@@ -80,10 +86,23 @@
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="horizontal" android:gravity="center" android:layout_marginTop="12dp">
         <Button android:id="@+id/speak_button" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Speak" android:layout_marginEnd="12dp" />
+            android:layout_height="wrap_content" android:text="Speak" android:layout_marginEnd="12dp"
+            android:backgroundTint="@color/action_background" android:textColor="@color/action_text" />
         <Button android:id="@+id/save_button" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:text="Save &amp; share MP3"
-            android:backgroundTint="@color/accent_dim" android:enabled="false" />
+            android:backgroundTint="@color/action_background" android:textColor="@color/action_text" android:enabled="false" />
+    </LinearLayout>
+
+    <LinearLayout android:id="@+id/playback_controls" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center"
+        android:visibility="gone">
+        <Button android:id="@+id/pause_button" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="Pause" android:enabled="false"
+            android:backgroundTint="@color/action_background" android:textColor="@color/action_text"
+            android:layout_marginEnd="12dp" />
+        <Button android:id="@+id/stop_button" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="Stop"
+            android:backgroundTint="@color/action_background" android:textColor="@color/action_text" />
     </LinearLayout>
 
     <TextView android:id="@+id/speak_status" android:layout_width="wrap_content"

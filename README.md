@@ -40,9 +40,73 @@ No account, no server, no audio leaves the device.
   voice; raw-space directions would move the speaker embedding and apply to saved voices only.
 - Voice profiles are stored locally (`files/voices/`): the reference WAV + raw float32 embedding.
 
+## 0.4.0: Auto emotions and playback controls
+
+Update the existing installation, without uninstalling, to keep saved voices and voice models.
+
+1. Open **Speak**, choose a voice and enter text.
+2. For automatic delivery, check **Auto emotions**. This disables the manual emotion
+   chips and Pitch / Expression / Pace sliders. Uncheck it to use the manual controls again.
+3. The first Speak or Save & share MP3 with Auto enabled downloads a **268.4 MB** int8
+   model from Hugging Face. Wi-Fi and free storage are recommended. The tokenizer is
+   bundled in a compact 12.3 MB binary in the APK (smaller after APK compression),
+   rather than requiring the original 34.4 MB JSON download. Manual mode needs no new model.
+4. Detection runs on your phone and shows its label and chosen speaking preset. The
+   same detected controls apply to live Speak and MP3 export. No typed text or audio is uploaded.
+5. During Speak playback, use **Pause**, then **Resume**, or **Stop**. Stop silences and
+   discards buffered playback immediately. Before audio begins it cancels the request
+   at the next model/generation checkpoint. Speak stays disabled while that background
+   step exits, so large model loads cannot overlap. Leaving the screen also stops playback.
+
+The chosen classifier is [Horizon-Labs/multilingual-emotions-small](https://huggingface.co/Horizon-Labs/multilingual-emotions-small),
+Apache-2.0, pinned to `ac26dadbdafc26276e01093790104679bf33aec5`, with a SHA-256-verified
+ONNX download. It runs with ONNX Runtime Android 1.23.2 CPU. The original tokenizer's
+vocabulary, byte fallback, added tokens and ranked BPE merges are preserved in
+`emotion-tokenizer.bin`; `tools/compile_emotion_tokenizer.py` regenerates it from the
+pinned upstream JSON. Model and runtime licenses are included in app assets.
+
+Auto applies one delivery preset to the **whole input**. Inputs longer than the model's
+256-token training window are analyzed in 254-content-token sections (plus BOS/EOS),
+then scores are averaged by content-token count. No text is silently dropped. Auto has
+an explicit 100,000-character limit; split larger text or switch to manual. This does
+not change the TTS engine's own existing utterance limits. Joy-related labels map to
+Happy, sadness-related labels to Sad, anger/annoyance to Angry, excitement to Excited.
+A conservative 0.5 minimum and unsupported emotions use Neutral. Scores do not alter
+steering strength. Calm and Whisper remain manual choices. Labels can still be wrong,
+especially for sarcasm, negation and mixed emotions. Hebrew training data was translated,
+so this is not a claim of benchmarked native-Hebrew accuracy.
+
+To reduce peak memory, Auto releases the cached TTS engine before classification and
+closes the ONNX session before reloading TTS. This trades some reload time for memory.
+Physical-phone latency, audio routing and memory behavior still need device testing.
+The existing GGUF models, saved voice files, MP3 encoder and keyboard inset ownership
+are unchanged.
+
+### Tests for this update
+
+`./gradlew testDebugUnitTest` covers tokenizer equality with 217 pinned Hugging Face
+fixtures (Hebrew, English, Unicode, special tokens and long text), lossless windowing,
+conservative mapping, disabled manual controls, pause/resume/stop, and existing
+voice/recreation/keyboard regressions. UI and AudioTrack checks are Robolectric host
+simulations on APIs 28 and 34, not physical-phone tests. The MP3 native test skips
+when its host library is not available; the existing arm64 MP3 binary is unchanged.
+
+An optional real-weight smoke test runs the actual app classifier with Linux ONNX Runtime
+1.23.2 native libraries and the pinned ONNX file, without a network request or private input:
+
+```sh
+VOICE_REPS_EMOTION_TEST_MODEL=/path/to/model_quantized.onnx \
+VOICE_REPS_ORT_HOST_LIBS=/path/to/linux-x64-ort-libraries \
+./gradlew testDebugUnitTest --tests com.voicereps.app.EmotionModelSmokeTest
+```
+
+Run the real-weight test separately from the full UI suite to keep host test memory low.
+This passed on synthetic English/Hebrew joy and sadness, negated anger (Neutral fallback),
+and a three-window long input. It does not prove arm64 Android model execution or listening quality.
+
 ## Build
 
-Prereqs: JDK 17, Android SDK 34 (platform + build-tools), Gradle 8.9. The prebuilt
+Prereqs: JDK 17, Android SDK 36 (platform + build-tools), Gradle 8.11.1 (included wrapper). The prebuilt
 `libzonos3jni.so` ships in `app/src/main/jniLibs/arm64-v8a/`, so a plain
 
 ```bash

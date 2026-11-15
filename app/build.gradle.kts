@@ -32,8 +32,8 @@ android {
         applicationId = "com.voicereps.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.3.0"
+        versionCode = 11
+        versionName = "0.4.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {
@@ -67,6 +67,7 @@ android {
 }
 
 dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.13")
     implementation("androidx.core:core-ktx:1.13.1")

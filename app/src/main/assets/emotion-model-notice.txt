@@ -1,0 +1,5 @@
+Horizon-Labs/multilingual-emotions-small, Apache-2.0
+Revision ac26dadbdafc26276e01093790104679bf33aec5
+https://huggingface.co/Horizon-Labs/multilingual-emotions-small
+Tokenizer compiled losslessly from upstream tokenizer.json.
+ONNX Runtime is MIT licensed. https://github.com/microsoft/onnxruntime
