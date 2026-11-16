@@ -16,6 +16,12 @@ class TqdmTest {
         assertTrue(l, l.contains("300/600 MB"))
         assertTrue(l, l.contains("[00:10<00:10, 30.0 MB/s]"))
     }
+    @Test fun approximateProgressShowsRoundedPercentAndNoCountsOrEta() {
+        val l = Tqdm.line("Loading engine", 281.0, 663.0, "MB", 11_000, approx = true)
+        assertTrue(l, l.startsWith("Loading engine ~40%|"))
+        assertFalse(l, l.contains("MB") || l.contains("<"))
+        assertTrue(l, l.contains("[00:11]"))
+    }
     @Test fun noTotalMeansNoPercentAndNoEta() {
         val l = Tqdm.line("Analysing voice", null, null, "", 4000)
         assertFalse(l, l.contains("%"))
@@ -41,5 +47,6 @@ class TqdmTest {
         assertEquals(0.0, seen.first().done!!, 0.0)
         assertTrue(seen.any { it.done!! in 4.9..5.1 })
         assertTrue(seen.all { it.fraction!! <= 0.99 + 1e-9 })
+        assertTrue(seen.all { it.approx })
     }
 }

@@ -24,8 +24,10 @@ object Tqdm {
     }
 
     /** "Loading engine 42%|████░░░░| 280/663 MB [00:11<00:15, 25.4 MB/s]" - ETA only with a measured total. */
-    fun line(desc: String, done: Double?, total: Double?, unit: String, elapsedMs: Long): String {
+    fun line(desc: String, done: Double?, total: Double?, unit: String, elapsedMs: Long, approx: Boolean = false): String {
         val frac = if (done != null && total != null && total > 0) (done / total).coerceIn(0.0, 1.0) else null
+        // Approximate progress (process-wide counters): only a rounded "~N%" and elapsed time, no exact counts or ETA.
+        if (approx) return desc + (if (frac != null) " ~%d%%".format(((frac * 100).toInt() / 5) * 5) else "") + bar(frac) + "  [" + clock(elapsedMs) + "]"
         val sb = StringBuilder(desc)
         if (frac != null) sb.append(" %3d%%".format((frac * 100).toInt()))
         sb.append(bar(frac))
@@ -43,7 +45,7 @@ object Tqdm {
 }
 
 /**
- * Bytes this process has read so far (Linux /proc/self/io "rchar"). The native model loader reads
+ * Bytes this PROCESS has read (not per file, so progress derived from it is approximate) so far (Linux /proc/self/io "rchar"). The native model loader reads
  * the model files with fread, so the growth of this counter while loading is a real progress
  * measure. Null when the platform does not expose it; callers then show stage + elapsed only.
  */
@@ -64,11 +66,13 @@ data class StepProgress(
     val elapsedMs: Long = 0,
     val stepIndex: Int = 0,
     val stepCount: Int = 0,
+    /** True when the fraction is an estimate (process-wide read counter), so no exact counts/ETA are shown. */
+    val approx: Boolean = false,
 ) {
     val fraction: Double? get() = if (done != null && total != null && total > 0) (done / total).coerceIn(0.0, 1.0) else null
     fun text(): String {
         val prefix = if (stepCount > 1) "[$stepIndex/$stepCount] " else ""
-        return prefix + Tqdm.line(stage, done, total, unit, elapsedMs)
+        return prefix + Tqdm.line(stage, done, total, unit, elapsedMs, approx)
     }
 }
 
@@ -86,7 +90,7 @@ fun <T> withReadProgress(
     if (report == null) return block()
     val start = clock()
     val base = meter.readBytes()
-    report(StepProgress(stage, if (base != null) 0.0 else null, if (base != null) totalBytes / 1e6 else null, "MB", 0, stepIndex, stepCount))
+    report(StepProgress(stage, if (base != null) 0.0 else null, if (base != null) totalBytes / 1e6 else null, "MB", 0, stepIndex, stepCount, approx = true))
     val stop = java.util.concurrent.atomic.AtomicBoolean(false)
     val poller = Thread {
         while (!stop.get()) {
@@ -96,7 +100,7 @@ fun <T> withReadProgress(
             val readMb = if (base != null && now != null) ((now - base).coerceIn(0, totalBytes)).toDouble() / 1e6 else null
             // Cap at 99%: the last in-memory setup step has no counter.
             val shown = readMb?.coerceAtMost(totalBytes / 1e6 * 0.99)
-            report(StepProgress(stage, shown, if (shown != null) totalBytes / 1e6 else null, "MB", clock() - start, stepIndex, stepCount))
+            report(StepProgress(stage, shown, if (shown != null) totalBytes / 1e6 else null, "MB", clock() - start, stepIndex, stepCount, approx = true))
         }
     }
     poller.isDaemon = true

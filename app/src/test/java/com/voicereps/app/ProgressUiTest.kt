@@ -28,7 +28,7 @@ class ProgressUiTest {
         scrolls(root).forEach { it.fullScroll(View.FOCUS_DOWN) }
         repeat(2) { root.measure(View.MeasureSpec.makeMeasureSpec(786, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(1600, View.MeasureSpec.EXACTLY)); root.layout(0, 0, 786, 1600) }
         val b = Bitmap.createBitmap(786, 1600, Bitmap.Config.ARGB_8888); root.draw(Canvas(b))
-        File("/downloads/$name.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File("/downloads/frames/$name.png").also { it.parentFile.mkdirs() }.outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
     @Test fun speakShowsEngineLoadBufferingAndPlayingProgress() {
@@ -39,7 +39,7 @@ class ProgressUiTest {
         val busy = SpeakFragment::class.java.getDeclaredMethod("setBusy", Boolean::class.javaPrimitiveType).apply { isAccessible = true }
         busy.invoke(f, true)
         val panel = ProgressPanel(f.view!!.findViewById(R.id.speak_progress))
-        panel.show(StepProgress("Loading engine", 281.0, 663.0, "MB", 11_000))
+        panel.show(StepProgress("Loading engine", 281.0, 663.0, "MB", 11_000, approx = true))
         a.findViewById<TextView>(R.id.speak_status).text = "Loading voice engine..."
         assertEquals(View.VISIBLE, f.view!!.findViewById<View>(R.id.speak_progress).visibility)
         val bar = f.view!!.findViewById<ProgressBar>(R.id.step_bar)
@@ -79,7 +79,7 @@ class ProgressUiTest {
         rv.findViewById<View>(R.id.consent_card).visibility = View.GONE
         rv.findViewById<View>(R.id.record_card).visibility = View.VISIBLE
         val panel = ProgressPanel(rv.findViewById(R.id.create_progress))
-        panel.show(StepProgress("Loading speaker encoder", 31.0, 45.0, "MB", 3_000, 1, 2))
+        panel.show(StepProgress("Loading speaker encoder", 31.0, 45.0, "MB", 3_000, 1, 2, approx = true))
         rv.findViewById<TextView>(R.id.record_status).text = "Building voice profile for \"Amir\"..."
         render(a, "voice-reps-0.5.0-voice-load", 0)
         panel.show(StepProgress("Analysing voice", elapsedMs = 4_000, stepIndex = 2, stepCount = 2))
