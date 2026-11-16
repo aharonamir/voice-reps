@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:visibility="gone" android:layout_marginTop="8dp">
+    <ProgressBar android:id="@+id/step_bar" style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:max="1000" android:indeterminate="false" />
+    <TextView android:id="@+id/step_text" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:fontFamily="monospace" android:textSize="11sp"
+        android:textColor="@color/text_secondary" android:layout_marginTop="4dp" />
+</LinearLayout>

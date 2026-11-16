@@ -57,8 +57,11 @@ object Zonos3Engine {
         if (engine != 0L) { Zonos3.nativeFree(engine); engine = 0L }
     }
 
+    fun isEngineLoaded() = engine != 0L
+
+    /** [report] gets real bytes-read progress while the three model files load (first use / after Auto emotions released it). */
     @Synchronized
-    fun engine(ctx: Context): Long {
+    fun engine(ctx: Context, report: ((StepProgress) -> Unit)? = null, stepIndex: Int = 1, stepCount: Int = 1): Long {
         Zonos3.checkLoaded()
         if (engine == 0L) {
             lastNativeError = ""
@@ -67,7 +70,10 @@ object Zonos3Engine {
             val d = modelFile(ctx, DECODER)
             val s = modelFile(ctx, STEER)
             Log.i(TAG, "init engine: backbone=${b.absolutePath} (${b.length()} bytes), decoder=${d.absolutePath} (${d.length()} bytes), steer=${s.absolutePath} (${s.length()} bytes)")
-            engine = Zonos3.nativeInit(b.absolutePath, d.absolutePath, s.absolutePath)
+            val total = b.length() + d.length() + s.length()
+            engine = withReadProgress("Loading engine", total, stepIndex, stepCount, report = report) {
+                Zonos3.nativeInit(b.absolutePath, d.absolutePath, s.absolutePath)
+            }
             val err = Zonos3.nativeLastError(engine)
             Log.i(TAG, "engine handle=$engine, native error='${err}'")
             if (engine == 0L || err.isNotEmpty()) {
@@ -81,12 +87,14 @@ object Zonos3Engine {
     }
 
     @Synchronized
-    fun spkEncoder(ctx: Context): Long {
+    fun spkEncoder(ctx: Context, report: ((StepProgress) -> Unit)? = null, stepIndex: Int = 1, stepCount: Int = 1): Long {
         Zonos3.checkLoaded()
         if (spkEncoder == 0L) {
             val f = modelFile(ctx, SPK)
             Log.i(TAG, "init speaker encoder: ${f.absolutePath} (${f.length()} bytes)")
-            spkEncoder = Zonos3.nativeSpkEncoderInit(f.absolutePath)
+            spkEncoder = withReadProgress("Loading speaker encoder", f.length(), stepIndex, stepCount, report = report) {
+                Zonos3.nativeSpkEncoderInit(f.absolutePath)
+            }
             Log.i(TAG, "speaker encoder handle=$spkEncoder")
         }
         return spkEncoder
@@ -106,9 +114,10 @@ object Zonos3Engine {
     } catch (t: Throwable) { fail("synthesize", t) }
 
     @Synchronized
-    fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, controls: String = "", listener: Zonos3.PcmListener, seed: Int = seed()): Boolean = try {
+    fun synthesizeStreaming(ctx: Context, text: String, embedding: FloatArray?, controls: String = "", listener: Zonos3.PcmListener, seed: Int = seed(),
+                            report: ((StepProgress) -> Unit)? = null, stepIndex: Int = 1, stepCount: Int = 1): Boolean = try {
         lastNativeError = ""
-        val h = engine(ctx)
+        val h = engine(ctx, report, stepIndex, stepCount)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
         val ok = Zonos3.nativeSynthesizeStreaming(h, text, seed, 0, controls, listener)
         if (!ok) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "streaming synthesis failed" }
@@ -119,25 +128,30 @@ object Zonos3Engine {
     }
 
     @Synchronized
-    fun synthesizeToWav(ctx: Context, text: String, embedding: FloatArray?, wav: File, controls: String = ""): Boolean = try {
+    fun synthesizeToWav(ctx: Context, text: String, embedding: FloatArray?, wav: File, controls: String = "",
+                        report: ((StepProgress) -> Unit)? = null, stepIndex: Int = 1, stepCount: Int = 1): Boolean = try {
         lastNativeError = ""
-        val h = engine(ctx)
+        val h = engine(ctx, report, stepIndex, stepCount)
         if (embedding != null) Zonos3.nativeSetSpeakerEmbedding(h, embedding) else Zonos3.nativeClearSpeaker(h)
-        val ok = Zonos3.nativeSynthesizeToFile(h, text, wav.absolutePath, seed(), 0, controls)
+        val ok = withElapsed("Rendering audio", stepIndex + 1, stepCount, report = report) {
+            Zonos3.nativeSynthesizeToFile(h, text, wav.absolutePath, seed(), 0, controls)
+        }
         if (!ok) lastNativeError = Zonos3.nativeLastError(h).ifEmpty { "WAV render failed" }
         ok
     } catch (t: Throwable) { fail("synthesizeToWav", t); false }
 
     /** Compute a 192-d speaker embedding from mono PCM (44.1k or 16k, up to 60 s used). Null on failure - read lastNativeError. */
-    fun embedVoice(ctx: Context, pcm: FloatArray, sampleRate: Int): FloatArray? = try {
+    fun embedVoice(ctx: Context, pcm: FloatArray, sampleRate: Int, report: ((StepProgress) -> Unit)? = null, firstStep: Int = 1, stepCount: Int = 2): FloatArray? = try {
         Log.i(TAG, "embedVoice: ${pcm.size} samples @ $sampleRate Hz")
-        val h = spkEncoder(ctx)
+        val h = spkEncoder(ctx, report, firstStep, stepCount)
         if (h == 0L) {
             lastNativeError = "speaker encoder failed to load (models/spk-encoder.gguf missing or corrupt - re-download models)"
             Log.e(TAG, lastNativeError)
             null
         } else {
-            val emb = Zonos3.nativeSpkEmbed(h, pcm, sampleRate)
+            val emb = withElapsed("Analysing voice", firstStep + 1, stepCount, report = report) {
+                Zonos3.nativeSpkEmbed(h, pcm, sampleRate)
+            }
             when {
                 emb == null -> { lastNativeError = "speaker encoder returned no embedding"; null }
                 emb.size != EMBEDDING_DIM -> { lastNativeError = "unexpected embedding size ${emb.size}"; null }

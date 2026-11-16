@@ -21,6 +21,7 @@ class VoicesFragment : Fragment() {
     private lateinit var store: VoiceStore
     private lateinit var adapter: VoiceAdapter
     private lateinit var empty: TextView
+    private lateinit var progress: ProgressPanel
     private val player = AudioPlayer()
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, saved: Bundle?): View =
@@ -29,6 +30,7 @@ class VoicesFragment : Fragment() {
     override fun onViewCreated(view: View, saved: Bundle?) {
         store = VoiceStore(requireContext())
         empty = view.findViewById(R.id.voices_empty)
+        progress = ProgressPanel(view.findViewById(R.id.voices_progress))
         val rv = view.findViewById<RecyclerView>(R.id.voices_list)
         rv.layoutManager = LinearLayoutManager(requireContext())
         adapter = VoiceAdapter(
@@ -59,8 +61,10 @@ class VoicesFragment : Fragment() {
         Thread {
             try {
                 val pcm = AudioDecoder.decodeWavFile(v.referenceWav)
-                val emb = pcm?.let { Zonos3Engine.embedVoice(appCtx, it, Zonos3Engine.SAMPLE_RATE) }
+                val emb = pcm?.let { Zonos3Engine.embedVoice(appCtx, it, Zonos3Engine.SAMPLE_RATE,
+                    report = { p -> activity?.runOnUiThread { if (view != null) progress.show(p) } }, firstStep = 1, stepCount = 2) }
                 activity?.runOnUiThread {
+                    if (view != null) progress.hide()
                     if (emb != null) {
                         store.complete(v, emb)
                         toast("\"${v.name}\" is ready")
@@ -72,7 +76,7 @@ class VoicesFragment : Fragment() {
             } catch (t: Throwable) {
                 Log.e(TAG, "finishSetup failed", t)
                 CrashLog.record(appCtx, "finishSetup", t)
-                activity?.runOnUiThread { toast("Error: ${t.message ?: t.javaClass.simpleName}") }
+                activity?.runOnUiThread { if (view != null) progress.hide(); toast("Error: ${t.message ?: t.javaClass.simpleName}") }
             }
         }.start()
     }

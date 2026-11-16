@@ -5,6 +5,9 @@
     <androidx.recyclerview.widget.RecyclerView android:id="@+id/voices_list"
         android:layout_width="match_parent" android:layout_height="match_parent" />
 
+    <include android:id="@+id/voices_progress" layout="@layout/view_progress"
+        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom" />
+
     <TextView android:id="@+id/voices_empty" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:layout_gravity="center"
         android:gravity="center" android:textColor="@color/text_secondary" android:textSize="15sp"

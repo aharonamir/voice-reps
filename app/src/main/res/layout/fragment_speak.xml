@@ -83,6 +83,12 @@
         android:layout_height="wrap_content" android:textColor="@color/teal" android:textSize="13sp"
         android:layout_marginTop="8dp" />
 
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="Playback buffer (for phones that stutter)" android:textColor="@color/text_secondary"
+        android:textSize="13sp" android:layout_marginTop="8dp" />
+    <Spinner android:id="@+id/buffer_spinner" android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="horizontal" android:gravity="center" android:layout_marginTop="12dp">
         <Button android:id="@+id/speak_button" android:layout_width="wrap_content"
@@ -108,6 +114,8 @@
     <TextView android:id="@+id/speak_status" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:layout_gravity="center" android:gravity="center"
         android:textColor="@color/text_secondary" android:layout_marginTop="12dp" android:textSize="14sp" />
+
+    <include android:id="@+id/speak_progress" layout="@layout/view_progress" />
 
     <Button android:id="@+id/report_button" style="@style/Widget.Material3.Button.TextButton"
         android:layout_width="wrap_content" android:layout_height="wrap_content"

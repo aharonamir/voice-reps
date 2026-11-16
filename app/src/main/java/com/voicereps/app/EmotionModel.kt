@@ -19,7 +19,7 @@ object EmotionModel {
     data class Choice(val label: String, val preset: String, val windows: Int)
     fun ready(ctx: Context) = file(ctx).length() == SIZE
     private fun file(ctx: Context) = File(ctx.filesDir, "emotions-$REVISION.onnx")
-    private fun download(ctx: Context, active: () -> Boolean, progress: (String) -> Unit): File {
+    private fun download(ctx: Context, active: () -> Boolean, progress: (String) -> Unit, report: ((StepProgress) -> Unit)?): File {
         val out = file(ctx)
         if (ready(ctx)) return out
         val part = File(out.path + ".part")
@@ -27,7 +27,7 @@ object EmotionModel {
         connection.connectTimeout = 20000; connection.readTimeout = 20000
         try {
             check(connection.responseCode == 200) { "Emotion model download: HTTP ${connection.responseCode}. Try again on Wi-Fi." }
-            val hash = MessageDigest.getInstance("SHA-256"); var got = 0L; var lastPercent = -1
+            val hash = MessageDigest.getInstance("SHA-256"); var got = 0L; var lastPercent = -1; val t0 = System.currentTimeMillis(); var lastReport = 0L
             connection.inputStream.use { source -> part.outputStream().use { dest ->
                 val b = ByteArray(256 * 1024)
                 while (true) {
@@ -35,6 +35,8 @@ object EmotionModel {
                     val n = source.read(b); if (n < 0) break
                     dest.write(b, 0, n); hash.update(b, 0, n); got += n
                     val percent = (got * 100 / SIZE).toInt()
+                    val nowMs = System.currentTimeMillis()
+                    if (report != null && nowMs - lastReport >= 200) { lastReport = nowMs; report(StepProgress("Downloading emotion model", got / 1e6, SIZE / 1e6, "MB", nowMs - t0)) }
                     if (percent != lastPercent) { progress("Downloading emotion model: $percent% (${got / 1_000_000}/268 MB)"); lastPercent = percent }
                 }
             } }
@@ -44,12 +46,12 @@ object EmotionModel {
         } finally { connection.disconnect(); part.delete() }
     }
     /** Release tokenizer and ONNX session before TTS, rather than cache two inference engines. */
-    @Synchronized fun classify(ctx: Context, text: String, active: () -> Boolean, progress: (String) -> Unit): Choice {
+    @Synchronized fun classify(ctx: Context, text: String, active: () -> Boolean, progress: (String) -> Unit, report: ((StepProgress) -> Unit)? = null): Choice {
         require(text.length <= 100000) { "Auto emotions supports up to 100,000 characters per request. Split this text or turn Auto emotions off. No text was cut." }
-        val model = download(ctx, active, progress)
-        check(active()) { "Stopped" }; progress("Detecting emotion on device...")
+        val model = download(ctx, active, progress, report)
+        check(active()) { "Stopped" }; progress("Detecting emotion on device..."); report?.invoke(StepProgress("Detecting emotion"))
         val windows = ctx.assets.open("emotion-tokenizer.bin").use { EmotionTokenizer.windows(EmotionTokenizer(it).encode(text)) }
-        val scores = DoubleArray(28); var weight = 0
+        val scores = DoubleArray(28); var weight = 0; val detectStart = System.currentTimeMillis()
         val env = OrtEnvironment.getEnvironment()
         OrtSession.SessionOptions().use { options ->
             options.setIntraOpNumThreads(2); options.setInterOpNumThreads(1)
@@ -57,6 +59,7 @@ object EmotionModel {
             env.createSession(model.path, options).use { session ->
                 windows.forEachIndexed { index, ids ->
                     check(active()) { "Stopped" }; progress("Detecting emotion: ${index + 1}/${windows.size} text sections...")
+                    report?.invoke(StepProgress("Detecting emotion", index.toDouble(), windows.size.toDouble(), "sections", System.currentTimeMillis() - detectStart))
                     OnnxTensor.createTensor(env, arrayOf(ids)).use { input ->
                         OnnxTensor.createTensor(env, arrayOf(LongArray(ids.size) { 1L })).use { mask ->
                             session.run(mapOf("input_ids" to input, "attention_mask" to mask)).use { result ->

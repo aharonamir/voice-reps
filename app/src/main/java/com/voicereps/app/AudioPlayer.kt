@@ -21,15 +21,33 @@ class AudioPlayer {
         internal val track: AudioTrack,
         internal val manager: AudioManager?,
         internal val focus: AudioFocusRequest?,
+        mode: BufferMode,
+        initialMs: Int,
     ) {
         @Volatile internal var closed = false
         @Volatile internal var paused = false
-        internal var written = 0L
         internal val stats = PcmStats()
+        internal val sink = object : PcmSink {
+            override fun write(pcm: FloatArray, offset: Int, count: Int): Int =
+                track.write(pcm, offset, count, AudioTrack.WRITE_NON_BLOCKING).also {
+                    check(it >= 0) { "Android audio write failed ($it). Try Speak again." }
+                }
+            override fun playedFrames(): Long = track.playbackHeadPosition.toLong() and 0xffffffffL
+            override fun play() { track.play() }
+            override fun pause() { track.pause() }
+        }
+        val buffer = JitterBuffer(sink, 44100, mode, initialMs, clock = { SystemClock.elapsedRealtime() })
+        @Volatile internal var writerError: Throwable? = null
+        internal val written get() = buffer.writtenFrames()
+        fun snapshot() = buffer.stats()
     }
 
-    /** Call only when PCM is ready, not before a potentially long model load. */
-    fun beginStream(ctx: Context? = null): Stream {
+    /**
+     * Call only when PCM is ready, not before a potentially long model load. Audio is queued in a
+     * jitter buffer and played by a writer thread; [mode]/[initialBufferMs] set how much is held
+     * back before playback starts.
+     */
+    fun beginStream(ctx: Context? = null, mode: BufferMode = BufferMode.AUTO, initialBufferMs: Int = mode.initialMs): Stream {
         stop()
         val manager = ctx?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         check(manager == null || manager.getStreamVolume(AudioManager.STREAM_MUSIC) > 0) {
@@ -55,7 +73,12 @@ class AudioPlayer {
                 t.release()
                 error("Android could not initialize media playback. Try Speak again.")
             }
-            return Stream(t, manager, focus).also { stream = it; t.play(); playing = true }
+            val s = Stream(t, manager, focus, mode, initialBufferMs)
+            stream = s
+            // The writer thread owns track.play()/pause() for buffering; it starts playback once
+            // enough audio is queued (or generation finished).
+            Thread({ writerLoop(s) }, "voice-reps-audio-writer").also { it.isDaemon = true }.start()
+            return s
         } catch (t: Throwable) {
             if (focus != null) manager.abandonAudioFocusRequest(focus)
             stop()
@@ -63,48 +86,65 @@ class AudioPlayer {
         }
     }
 
-    fun writeStream(s: Stream, pcm: FloatArray) {
-        check(!s.closed && stream === s) { "Playback was interrupted. Try Speak again." }
-        s.stats.add(pcm)
-        var offset = 0
-        var deadline = SystemClock.elapsedRealtime() + 30000
-        while (offset < pcm.size) {
-            check(!s.closed) { "Playback was interrupted. Try Speak again." }
-            if (s.paused) { deadline = SystemClock.elapsedRealtime() + 30000; Thread.sleep(20); continue }
-            // Short nonblocking writes let stop release safely without a blocked native write.
-            val n = synchronized(s) {
-                check(!s.closed) { "Playback interrupted" }
-                s.track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_NON_BLOCKING)
+    private fun writerLoop(s: Stream) {
+        try {
+            while (!s.closed) {
+                if (s.paused) { Thread.sleep(20); continue }
+                val finished = synchronized(s) { if (s.closed || s.paused) false else s.buffer.step() }
+                playing = !s.paused && s.buffer.stats().state == JitterBuffer.State.PLAYING && stream === s
+                if (finished) break
+                Thread.sleep(10)
             }
-            if (n == 0) { check(SystemClock.elapsedRealtime() < deadline) { "Android audio playback stalled." }; Thread.sleep(10); continue }
-            deadline = SystemClock.elapsedRealtime() + 30000
-            check(n > 0) { "Android audio write failed ($n). Try Speak again." }
-            offset += n
-            s.written += n
+        } catch (t: Throwable) {
+            if (!s.closed) { s.writerError = t; Log.e("AudioPlayer", "writer failed", t) }
         }
     }
 
+    /** Queue PCM. Blocks only when the generator is far ahead of playback (bounded memory). */
+    fun writeStream(s: Stream, pcm: FloatArray) {
+        check(!s.closed && stream === s) { "Playback was interrupted. Try Speak again." }
+        s.writerError?.let { throw IllegalStateException(it.message ?: "Audio playback failed.", it) }
+        s.stats.add(pcm)
+        s.buffer.offer(pcm)
+        val waitStart = SystemClock.elapsedRealtime()
+        var deadline = waitStart + 30000
+        while (s.buffer.isFull()) {
+            check(!s.closed) { "Playback was interrupted. Try Speak again." }
+            s.writerError?.let { throw IllegalStateException(it.message ?: "Audio playback failed.", it) }
+            if (s.paused) deadline = SystemClock.elapsedRealtime() + 30000
+            check(SystemClock.elapsedRealtime() < deadline) { "Android audio playback stalled." }
+            Thread.sleep(10)
+        }
+        val waited = SystemClock.elapsedRealtime() - waitStart
+        if (waited > 0) s.buffer.addBlockedMs(waited)
+    }
+
     /** Drain buffered audio, then release. Never claim success on a stalled/dead track. */
-    fun finishStream(s: Stream, timeoutMs: Long = 30000) {
+    fun finishStream(s: Stream, timeoutMs: Long = 30000): JitterStats {
         try {
             s.stats.requireAudible()
+            s.buffer.markDone()
             var deadline = SystemClock.elapsedRealtime() + timeoutMs
             var previous = -1L
             while (true) {
                 check(!s.closed) { "Playback was interrupted. Try Speak again." }
+                s.writerError?.let { throw IllegalStateException(it.message ?: "Audio playback failed.", it) }
                 if (s.paused) { deadline = SystemClock.elapsedRealtime() + timeoutMs; Thread.sleep(25); continue }
                 val played = synchronized(s) {
                     check(!s.closed) { "Playback interrupted" }
-                    s.track.playbackHeadPosition.toLong() and 0xffffffffL
+                    s.sink.playedFrames()
                 }
-                if (played != previous) { deadline = SystemClock.elapsedRealtime() + timeoutMs; previous = played }
-                if (played >= s.written) break
+                val state = s.buffer.stats().state
+                if (played != previous || state != JitterBuffer.State.PLAYING) { deadline = SystemClock.elapsedRealtime() + timeoutMs; previous = played }
+                if (s.buffer.isDrained() && played >= s.written) break
                 if (s.paused) continue
-                check(s.track.playState == AudioTrack.PLAYSTATE_PLAYING) { "Android stopped audio playback. Try Speak again." }
+                check(state != JitterBuffer.State.PLAYING || s.track.playState == AudioTrack.PLAYSTATE_PLAYING) { "Android stopped audio playback. Try Speak again." }
                 check(SystemClock.elapsedRealtime() < deadline) { "Android audio playback stalled. Try Speak again." }
                 Thread.sleep(25)
             }
-            Log.i("AudioPlayer", "played ${s.written} frames; peak=${s.stats.peak}; route=${s.track.routedDevice?.productName}")
+            val st = s.buffer.stats()
+            Log.i("AudioPlayer", "played ${s.written} frames; peak=${s.stats.peak}; underruns=${st.underruns}; rtf=${st.realTimeFactor}; route=${s.track.routedDevice?.productName}")
+            return st
         } finally { close(s) }
     }
 
@@ -136,7 +176,7 @@ class AudioPlayer {
         if (!s.closed) { s.paused = true; s.track.pause(); playing = false }
     } } }
     fun resume() { stream?.let { s -> synchronized(s) {
-        if (!s.closed) { s.track.play(); s.paused = false; playing = true }
+        if (!s.closed) { s.paused = false; s.buffer.onResume(); playing = true }
     } } }
 
     fun cancelStream(s: Stream) { close(s) }

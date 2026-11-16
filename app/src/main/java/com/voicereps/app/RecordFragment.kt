@@ -35,6 +35,7 @@ class RecordFragment : Fragment() {
     private lateinit var recordBtn: Button
     private lateinit var createBtn: Button
     private lateinit var status: TextView
+    private lateinit var createProgress: ProgressPanel
 
     private val pickAudio = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) buildVoiceFromUpload(uri)
@@ -56,6 +57,7 @@ class RecordFragment : Fragment() {
         recordBtn = view.findViewById(R.id.record_button)
         createBtn = view.findViewById(R.id.create_voice_button)
         status = view.findViewById(R.id.record_status)
+        createProgress = ProgressPanel(view.findViewById(R.id.create_progress))
 
         view.findViewById<Button>(R.id.consent_agree).setOnClickListener {
             consentCard.visibility = View.GONE
@@ -164,8 +166,10 @@ class RecordFragment : Fragment() {
                 val v = store.addPending(name, source, wav)
                 Log.i(TAG, "createVoice: pending voice ${v.id} saved, building embedding")
                 ui { status.text = "Building voice profile for \"$name\" (can take a minute on first use)..." }
-                val emb = Zonos3Engine.embedVoice(appCtx, pcm, Zonos3Engine.SAMPLE_RATE)
+                val emb = Zonos3Engine.embedVoice(appCtx, pcm, Zonos3Engine.SAMPLE_RATE,
+                    report = { p -> ui { if (view != null) createProgress.show(p) } }, firstStep = 1, stepCount = 2)
                 ui {
+                    if (view != null) createProgress.hide()
                     createBtn.isEnabled = true
                     if (emb == null) {
                         val why = Zonos3Engine.lastNativeError.ifEmpty { "unknown error" }
@@ -180,6 +184,7 @@ class RecordFragment : Fragment() {
                 Log.e(TAG, "createVoice failed", t)
                 CrashLog.record(appCtx, "createVoice", t)
                 ui {
+                    if (view != null) createProgress.hide()
                     createBtn.isEnabled = true
                     status.text = "Error creating voice: ${t.message ?: t.javaClass.simpleName}"
                 }

@@ -39,6 +39,12 @@ class SpeakFragment : Fragment() {
     private lateinit var pauseBtn: Button
     private lateinit var stopBtn: Button
     private var paused = false
+    private lateinit var progress: ProgressPanel
+    private lateinit var bufferSpinner: Spinner
+    @Volatile private var activeStream: AudioPlayer.Stream? = null
+    @Volatile private var generating = false
+    @Volatile private var generateStart = 0L
+    private var tickerRunning = false
     private var autoResult: String? = null
 
     private var voices: List<Voice> = emptyList()
@@ -71,6 +77,16 @@ class SpeakFragment : Fragment() {
         speakBtn = view.findViewById(R.id.speak_button)
         saveBtn = view.findViewById(R.id.save_button)
         status = view.findViewById(R.id.speak_status)
+        progress = ProgressPanel(view.findViewById(R.id.speak_progress))
+        bufferSpinner = view.findViewById(R.id.buffer_spinner)
+        bufferSpinner.adapter = ArrayAdapter(requireContext(), android.R.layout.simple_spinner_dropdown_item, BufferMode.values().map { it.label })
+        bufferSpinner.setSelection(bufferMode().ordinal)
+        bufferSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                prefs.edit().putString("buffer_mode", BufferMode.values()[pos].name).apply()
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
 
         autoEmotions = view.findViewById(R.id.auto_emotions)
         autoStatus = view.findViewById(R.id.auto_emotion_status)
@@ -181,9 +197,9 @@ class SpeakFragment : Fragment() {
     private fun resolveControls(id: Int, ctx: android.content.Context, text: String, auto: Boolean, manual: String): String {
         if (!auto) return manual
         Zonos3Engine.releaseSynthesisEngine()
-        val choice = EmotionModel.classify(ctx, text, { operation.get() == id }) { message ->
+        val choice = EmotionModel.classify(ctx, text, { operation.get() == id }, { message ->
             update(id) { status.text = message }
-        }
+        }, { p -> update(id) { progress.show(p) } })
         update(id) {
             autoResult = "Detected: ${choice.label} → ${choice.preset}" +
                 (if (choice.preset == "Neutral" && choice.label != "neutral") " (uncertain or no matching preset)" else "") +
@@ -226,6 +242,48 @@ class SpeakFragment : Fragment() {
         }
     }
 
+    private fun bufferMode() = BufferMode.fromName(prefs.getString("buffer_mode", null))
+
+    /** Live tqdm-style line for generation and the playback buffer; every number is measured. */
+    private fun startTicker() {
+        if (tickerRunning) return
+        tickerRunning = true
+        val v = view ?: run { tickerRunning = false; return }
+        v.postDelayed(object : Runnable {
+            override fun run() {
+                if (view == null || !busy) { tickerRunning = false; return }
+                tick()
+                view?.postDelayed(this, 250)
+            }
+        }, 250)
+    }
+
+    private fun tick() {
+        val s = activeStream
+        val elapsed = android.os.SystemClock.elapsedRealtime() - generateStart
+        if (s != null && !paused) {
+            val st = try { s.snapshot() } catch (_: Throwable) { return }
+            val ahead = st.aheadMs / 1000.0
+            val rate = st.realTimeFactor?.let { " · gen %.1fx".format(it) } ?: ""
+            val stalls = " · refills ${st.underruns}"
+            if (st.state == JitterBuffer.State.BUFFERING) {
+                val target = if (st.targetMs < 0) null else st.targetMs / 1000.0
+                val label = if (st.rebuffering) "Refilling buffer" else "Buffering"
+                val frac = target?.let { if (it > 0) ahead / it else null }
+                val line = if (target != null) "$label ${Tqdm.bar(frac)}\n%.1f/%.1f s%s%s".format(ahead, target, rate, stalls)
+                    else "Generating whole text ${Tqdm.bar(null)}\n%.1f s so far%s".format(ahead, rate)
+                progress.showFraction(frac, line)
+                status.text = if (st.targetMs < 0) "Generating the whole text before playing..." else "Buffering so playback does not stutter..."
+            } else if (st.state == JitterBuffer.State.PLAYING) {
+                val cap = maxOf(st.targetMs, 2000L) / 1000.0
+                progress.showFraction((ahead / cap).coerceIn(0.0, 1.0), "Playing ${Tqdm.bar((ahead / cap).coerceIn(0.0, 1.0))}\n%.1f s buffered ahead%s%s".format(ahead, rate, stalls))
+                status.text = "Speaking..."
+            }
+        } else if (s == null && generating && Zonos3Engine.isEngineLoaded()) {
+            progress.show(StepProgress("Generating first audio", elapsedMs = elapsed))
+        }
+    }
+
     private fun update(id: Int, action: () -> Unit) {
         activity?.runOnUiThread { if (operation.get() == id && view != null) action() }
     }
@@ -237,6 +295,8 @@ class SpeakFragment : Fragment() {
         spinner.isEnabled = !value
         input.isEnabled = !value
         autoEmotions.isEnabled = !value
+        bufferSpinner.isEnabled = !value
+        if (!value) { generating = false; activeStream = null; progress.hide() } else startTicker()
         view?.findViewById<View>(R.id.playback_controls)?.visibility = if (value) View.VISIBLE else View.GONE
         if (!value) { paused = false; pauseBtn.text = "Pause"; pauseBtn.isEnabled = false }
         stopBtn.isEnabled = value
@@ -286,8 +346,12 @@ class SpeakFragment : Fragment() {
             try {
                 val controls = resolveControls(id, appCtx, text, auto, manual)
                 check(operation.get() == id) { "Stopped" }
-                update(id) { rememberGeneration(text, controls); status.text = "Loading voice engine..." }
+                update(id) { rememberGeneration(text, controls); status.text = if (Zonos3Engine.isEngineLoaded()) "Generating..." else "Loading voice engine..." }
                 val t0 = System.currentTimeMillis()
+                generateStart = android.os.SystemClock.elapsedRealtime(); generating = true
+                val mode = bufferMode()
+                val learned = prefs.getInt("jitter_ms", BufferMode.AUTO.initialMs).coerceIn(BufferMode.AUTO.initialMs, 12000)
+                val initialBuffer = if (mode == BufferMode.AUTO) learned else mode.initialMs
                 // Strong expression steering can occasionally make the engine render a silent clip.
                 // Retry with a new seed and gentler steering before telling the user it failed.
                 val attempts = listOf(controls, scaleControls(controls, 0.5), "")
@@ -307,29 +371,39 @@ class SpeakFragment : Fragment() {
                                 synchronized(player) {
                                     check(operation.get() == id) { "Playback interrupted" }
                                     if (stream == null) {
-                                        stream = player.beginStream(appCtx)
+                                        stream = player.beginStream(appCtx, mode, initialBuffer)
+                                        activeStream = stream
                                         val ms = System.currentTimeMillis() - t0
-                                        update(id) { pauseBtn.isEnabled = true; status.text = "Speaking... (first audio in ${ms}ms)" }
+                                        Log.i(TAG, "first audio after ${ms}ms, buffer mode=$mode initial=${initialBuffer}ms")
+                                        update(id) { pauseBtn.isEnabled = true }
                                     }
                                 }
                                 player.writeStream(stream!!, pcm)
                             }
-                        }, seed)
+                        }, seed, { p -> update(id) { progress.show(p) } })
                     check(ok) { Zonos3Engine.lastNativeError.ifEmpty { "Speech generation failed. Try Speak again." } }
                     val audible = stats.frames > 0 && stats.peak > 0.00001f
                     Log.i(TAG, "attempt ${n + 1}/${attempts.size} controls='$ctl' seed=$seed frames=${stats.frames} peak=${stats.peak} voice=${if (emb == null) "default" else "saved"}")
                     if (audible) { played = true; break }
                     lastFailure = "The engine returned silent audio (controls='$ctl', frames=${stats.frames})."
                     CrashLog.record(appCtx, "silent attempt ${n + 1}", IllegalStateException(lastFailure))
-                    stream?.let { player.cancelStream(it) }; stream = null
+                    stream?.let { player.cancelStream(it) }; stream = null; activeStream = null
                     if (n < attempts.size - 1) update(id) { status.text = "Silent result, retrying (${n + 2}/${attempts.size})..." }
                 }
                 check(played) { "$lastFailure Tried ${attempts.size} times. Try Speak again." }
                 val finished = stream ?: error("The engine returned no audio. Try Speak again.")
-                player.finishStream(finished)
+                val st = player.finishStream(finished)
+                if (mode == BufferMode.AUTO) {
+                    // Remember what this phone needed: grow after stalls, relax slowly when playback was smooth.
+                    val next = if (st.underruns > 0) st.targetMs.toInt().coerceIn(BufferMode.AUTO.initialMs, 12000)
+                        else (learned * 3 / 4).coerceAtLeast(BufferMode.AUTO.initialMs)
+                    prefs.edit().putInt("jitter_ms", next).apply()
+                }
                 update(id) {
                     setBusy(false)
-                    status.text = "Done. No sound? Check media volume and Bluetooth."
+                    val rate = st.realTimeFactor?.let { " Generated at %.1fx real time.".format(it) } ?: ""
+                    val stalls = if (st.underruns > 0) " Paused to refill the buffer ${st.underruns}x." else ""
+                    status.text = "Done.$rate$stalls No sound? Check media volume and Bluetooth."
                 }
             } catch (t: Throwable) {
                 reportError(id, appCtx, "speak", t)
@@ -368,7 +442,8 @@ class SpeakFragment : Fragment() {
                 check(operation.get() == id) { "Stopped" }
                 update(id) { rememberGeneration(text, controls); status.text = "Rendering MP3..." }
                 val wav = File(appCtx.cacheDir, "voice-reps-${System.currentTimeMillis()}.wav")
-                val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav, controls)
+                val ok = Zonos3Engine.synthesizeToWav(appCtx, text, emb, wav, controls,
+                    report = { p -> update(id) { progress.show(p) } }, stepIndex = 1, stepCount = 2)
                 check(operation.get() == id) { wav.delete(); "Stopped" }
                 check(ok && wav.length() > 44) { Zonos3Engine.lastNativeError.ifEmpty { "No audio was saved." } }
                 val mp3 = File(appCtx.cacheDir, wav.nameWithoutExtension + ".mp3")

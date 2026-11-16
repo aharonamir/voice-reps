@@ -28,7 +28,7 @@ class EmotionModelSmokeTest {
         source.copyTo(target, overwrite = true)
         try {
             listOf("I am so happy today!", "אני כל כך שמח היום!", "I feel very sad and lonely.", "אני עצוב ובודד היום.", "I am not angry with you.", "אני לא כועס עליך.", "I am happy today! ".repeat(150)).forEach { text ->
-                val c = EmotionModel.classify(ctx, text, { true }) {}
+                val c = EmotionModel.classify(ctx, text, { true }, {})
                 println("EMOTION_SMOKE chars=${text.length} text=${text.take(50)} label=${c.label} preset=${c.preset} windows=${c.windows}")
                 assertTrue(c.preset in listOf("Neutral", "Happy", "Sad", "Angry", "Excited"))
                 if (text.length > 1000) assertTrue(c.windows > 1)
